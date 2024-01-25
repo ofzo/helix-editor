@@ -1168,6 +1168,7 @@ version = "23.10.0"
 dependencies = [
  "dunce",
  "etcetera",
+ "regex-cursor",
  "ropey",
  "tempfile",
  "which",
@@ -1752,13 +1753,26 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b7fa1134405e2ec9353fd416b17f8dacd46c473d7d3fd1cf202706a14eb792a"
+checksum = "5bb987efffd3c6d0d8f5f89510bb458559eab11e4f869acb20bf845e016259cd"
 dependencies = [
  "aho-corasick",
  "memchr",
  "regex-syntax",
+]
+
+[[package]]
+name = "regex-cursor"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9aa7e740d1eb8eca7b78153b3cc74c9a1514b6caf26bee54d651ab378e9d2434"
+dependencies = [
+ "log",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+ "ropey",
 ]
 
 [[package]]
