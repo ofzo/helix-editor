@@ -142,7 +142,7 @@ impl Component for SignatureHelp {
         }
 
         let sep_style = Style::default();
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let borders = BorderType::line_symbols(BorderType::Rounded);
         for x in sig_text_area.left()..sig_text_area.right() {
             if let Some(cell) = surface.get_mut(x, sig_text_area.bottom()) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);

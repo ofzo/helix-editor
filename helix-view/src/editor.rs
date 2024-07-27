@@ -535,6 +535,9 @@ pub enum StatusLineElement {
     /// The file absolute path
     FileAbsolutePath,
 
+    /// The file relative path base on repo or home dir
+    FileRelativePath,
+
     // The file modification indicator
     FileModificationIndicator,
 
@@ -980,7 +983,7 @@ impl Default for Config {
             default_line_ending: LineEndingConfig::default(),
             insert_final_newline: true,
             smart_tab: Some(SmartTabConfig::default()),
-            popup_border: PopupBorderConfig::None,
+            popup_border: PopupBorderConfig::All,
             indent_heuristic: IndentationHeuristic::default(),
             jump_label_alphabet: ('a'..='z').collect(),
             inline_diagnostics: InlineDiagnosticsConfig::default(),
@@ -1716,6 +1719,7 @@ impl Editor {
                 None,
                 Some(self.syn_loader.clone()),
                 self.config.clone(),
+                &self.diff_providers
             )?;
 
             let diagnostics =
