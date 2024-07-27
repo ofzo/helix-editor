@@ -314,8 +314,8 @@ impl Markdown {
                     }
                 }
                 Event::Rule => {
-                    lines.push(Spans::from(Span::styled("---", code_style)));
-                    lines.push(Spans::default());
+                    lines.push(Spans::from(Span::styled("────────────", code_style)));
+                    // lines.push(Spans::default());
                 }
                 // TaskListMarker(bool) true if checked
                 _ => {

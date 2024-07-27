@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - ofzo
   merge_group:
   schedule:
     - cron: "00 01 * * *"

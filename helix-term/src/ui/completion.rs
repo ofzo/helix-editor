@@ -44,6 +44,42 @@ impl menu::Item for CompletionItem {
 
         menu::Row::new(vec![
             menu::Cell::from(Span::styled(
+                " ".to_string()
+                    + match self.item.kind {
+                        Some(lsp::CompletionItemKind::TEXT) => "󰉿",
+                        Some(lsp::CompletionItemKind::METHOD) => "󰆧",
+                        Some(lsp::CompletionItemKind::FUNCTION) => "󰊕",
+                        Some(lsp::CompletionItemKind::CONSTRUCTOR) => "",
+                        Some(lsp::CompletionItemKind::FIELD) => "󰜢",
+                        Some(lsp::CompletionItemKind::VARIABLE) => "󰀫",
+                        Some(lsp::CompletionItemKind::CLASS) => "󰠱",
+                        Some(lsp::CompletionItemKind::INTERFACE) => "",
+                        Some(lsp::CompletionItemKind::MODULE) => "",
+                        Some(lsp::CompletionItemKind::PROPERTY) => "󰜢",
+                        Some(lsp::CompletionItemKind::UNIT) => "󰑭",
+                        Some(lsp::CompletionItemKind::VALUE) => "󰎠",
+                        Some(lsp::CompletionItemKind::ENUM) => "",
+                        Some(lsp::CompletionItemKind::KEYWORD) => "󰌋",
+                        Some(lsp::CompletionItemKind::SNIPPET) => "",
+                        Some(lsp::CompletionItemKind::COLOR) => "󰏘",
+                        Some(lsp::CompletionItemKind::FILE) => "󰈙",
+                        Some(lsp::CompletionItemKind::REFERENCE) => "󰈇",
+                        Some(lsp::CompletionItemKind::FOLDER) => "󰉋",
+                        Some(lsp::CompletionItemKind::ENUM_MEMBER) => "",
+                        Some(lsp::CompletionItemKind::CONSTANT) => "󰏿",
+                        Some(lsp::CompletionItemKind::STRUCT) => "󰙅",
+                        Some(lsp::CompletionItemKind::EVENT) => "",
+                        Some(lsp::CompletionItemKind::OPERATOR) => "󰆕",
+                        Some(lsp::CompletionItemKind::TYPE_PARAMETER) => "",
+                        Some(kind) => {
+                            log::error!("Received unknown completion item kind: {:?}", kind);
+                            ""
+                        }
+                        None => "",
+                    },
+                Style::default().fg(helix_view::theme::Color::Gray),
+            )),
+            menu::Cell::from(Span::styled(
                 self.item.label.as_str(),
                 if deprecated {
                     Style::default().add_modifier(Modifier::CROSSED_OUT)
@@ -51,38 +87,6 @@ impl menu::Item for CompletionItem {
                     Style::default()
                 },
             )),
-            menu::Cell::from(match self.item.kind {
-                Some(lsp::CompletionItemKind::TEXT) => "text",
-                Some(lsp::CompletionItemKind::METHOD) => "method",
-                Some(lsp::CompletionItemKind::FUNCTION) => "function",
-                Some(lsp::CompletionItemKind::CONSTRUCTOR) => "constructor",
-                Some(lsp::CompletionItemKind::FIELD) => "field",
-                Some(lsp::CompletionItemKind::VARIABLE) => "variable",
-                Some(lsp::CompletionItemKind::CLASS) => "class",
-                Some(lsp::CompletionItemKind::INTERFACE) => "interface",
-                Some(lsp::CompletionItemKind::MODULE) => "module",
-                Some(lsp::CompletionItemKind::PROPERTY) => "property",
-                Some(lsp::CompletionItemKind::UNIT) => "unit",
-                Some(lsp::CompletionItemKind::VALUE) => "value",
-                Some(lsp::CompletionItemKind::ENUM) => "enum",
-                Some(lsp::CompletionItemKind::KEYWORD) => "keyword",
-                Some(lsp::CompletionItemKind::SNIPPET) => "snippet",
-                Some(lsp::CompletionItemKind::COLOR) => "color",
-                Some(lsp::CompletionItemKind::FILE) => "file",
-                Some(lsp::CompletionItemKind::REFERENCE) => "reference",
-                Some(lsp::CompletionItemKind::FOLDER) => "folder",
-                Some(lsp::CompletionItemKind::ENUM_MEMBER) => "enum_member",
-                Some(lsp::CompletionItemKind::CONSTANT) => "constant",
-                Some(lsp::CompletionItemKind::STRUCT) => "struct",
-                Some(lsp::CompletionItemKind::EVENT) => "event",
-                Some(lsp::CompletionItemKind::OPERATOR) => "operator",
-                Some(lsp::CompletionItemKind::TYPE_PARAMETER) => "type_param",
-                Some(kind) => {
-                    log::error!("Received unknown completion item kind: {:?}", kind);
-                    ""
-                }
-                None => "",
-            }),
         ])
     }
 }
