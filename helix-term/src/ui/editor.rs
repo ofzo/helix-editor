@@ -12,6 +12,7 @@ use crate::{
     },
 };
 
+use crossterm::terminal::LeaveAlternateScreen;
 use helix_core::{
     diagnostic::NumberOrString,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
@@ -99,7 +100,7 @@ impl EditorView {
         let mut decorations = DecorationManager::default();
 
         if is_focused && config.cursorline {
-            decorations.add_decoration(Self::cursorline(doc, view, theme));
+            decorations.add_decoration(Self::cursorline(doc, view, theme, &editor.mode));
         }
 
         if is_focused && config.cursorcolumn {
@@ -476,12 +477,35 @@ impl EditorView {
         let cursorkind = cursor_shape_config.from_mode(mode);
         let cursor_is_block = cursorkind == CursorKind::Block;
 
-        let selection_scope = theme
-            .find_scope_index_exact("ui.selection")
-            .expect("could not find `ui.selection` scope in the theme!");
-        let primary_selection_scope = theme
-            .find_scope_index_exact("ui.selection.primary")
-            .unwrap_or(selection_scope);
+        // let selection_scope = theme
+        //     .find_scope_index_exact("ui.selection")
+        //     .expect("could not find `ui.selection` scope in the theme!");
+
+        let selection_scope = match mode {
+            Mode::Normal => theme.find_scope_index_exact("ui.selection.normal"),
+            Mode::Select => theme.find_scope_index_exact("ui.selection.select"),
+            Mode::Insert => theme.find_scope_index_exact("ui.selection.insert"),
+        }
+        .unwrap_or(
+            theme
+                .find_scope_index_exact("ui.selection")
+                .expect("could not find `ui.selection` scope in the theme!"),
+        );
+
+        // let primary_selection_scope = theme
+        //     .find_scope_index_exact("ui.selection.primary")
+        //     .unwrap_or(selection_scope);
+
+        let primary_selection_scope = match mode {
+            Mode::Normal => theme.find_scope_index_exact("ui.selection.primary.normal"),
+            Mode::Select => theme.find_scope_index_exact("ui.selection.primary.select"),
+            Mode::Insert => theme.find_scope_index_exact("ui.selection.primary.insert"),
+        }
+        .unwrap_or(
+            theme
+                .find_scope_index_exact("ui.selection.primary")
+                .expect("could not find `ui.selection.primary` scope in the theme!"),
+        );
 
         let base_cursor_scope = theme
             .find_scope_index_exact("ui.cursor")
@@ -773,7 +797,7 @@ impl EditorView {
     }
 
     /// Apply the highlighting on the lines where a cursor is active
-    pub fn cursorline(doc: &Document, view: &View, theme: &Theme) -> impl Decoration {
+    pub fn cursorline(doc: &Document, view: &View, theme: &Theme, mode: &Mode) -> impl Decoration {
         let text = doc.text().slice(..);
         // TODO only highlight the visual line that contains the cursor instead of the full visual line
         let primary_line = doc.selection(view.id).primary().cursor_line(text);
@@ -790,7 +814,13 @@ impl EditorView {
             .map(|range| range.cursor_line(text))
             .collect();
 
-        let primary_style = theme.get("ui.cursorline.primary");
+        let primary_style = match mode {
+            Mode::Normal => theme.try_get("ui.cursorline.primary.normal"),
+            Mode::Select => theme.try_get("ui.cursorline.primary.select"),
+            Mode::Insert => theme.try_get("ui.cursorline.primary.insert"),
+        }
+        .unwrap_or(theme.get("ui.cursorline.primary"));
+
         let secondary_style = theme.get("ui.cursorline.secondary");
         let viewport = view.area;
 

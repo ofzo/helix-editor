@@ -614,16 +614,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             (size, _) if size > MAX_FILE_SIZE_FOR_PREVIEW => {
                                 CachedPreview::LargeFile
                             }
-                            _ => Document::open(&path, None, None, editor.config.clone())
-                                .map(|doc| {
-                                    // Asynchronously highlight the new document
-                                    helix_event::send_blocking(
-                                        &self.preview_highlight_handler,
-                                        path.clone(),
-                                    );
-                                    CachedPreview::Document(Box::new(doc))
-                                })
-                                .unwrap_or(CachedPreview::NotFound),
+                            _ => Document::open(
+                                &path,
+                                None,
+                                None,
+                                editor.config.clone(),
+                                &editor.diff_providers,
+                            )
+                            .map(|doc| {
+                                // Asynchronously highlight the new document
+                                helix_event::send_blocking(
+                                    &self.preview_highlight_handler,
+                                    path.clone(),
+                                );
+                                CachedPreview::Document(Box::new(doc))
+                            })
+                            .unwrap_or(CachedPreview::NotFound),
                         },
                     )
                     .unwrap_or(CachedPreview::NotFound);
@@ -688,10 +694,18 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let header_style = cx.editor.theme.get("ui.picker.header");
+        let borders = BorderType::line_symbols(BorderType::Rounded);
         for x in inner.left()..inner.right() {
             if let Some(cell) = surface.get_mut(x, inner.y + 1) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
+            }
+        }
+        if self.columns.len() > 1 {
+            for x in inner.left()..inner.right() {
+                if let Some(cell) = surface.get_mut(x, inner.y + 2) {
+                    cell.set_symbol(" ").set_style(header_style);
+                }
             }
         }
 
@@ -791,7 +805,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
-            .highlight_symbol(" > ")
+            .highlight_symbol(" ")
             .column_spacing(1)
             .widths(&self.widths);
 
@@ -799,21 +813,25 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         if self.columns.len() > 1 {
             let active_column = self.query.active_column(self.prompt.position());
             let header_style = cx.editor.theme.get("ui.picker.header");
+            let header_column_style = cx.editor.theme.get("ui.picker.header.column");
 
-            table = table.header(Row::new(self.columns.iter().map(|column| {
-                if column.hidden {
-                    Cell::default()
-                } else {
-                    let style = if active_column.is_some_and(|name| Arc::ptr_eq(name, &column.name))
-                    {
-                        cx.editor.theme.get("ui.picker.header.active")
+            table = table.header(
+                Row::new(self.columns.iter().map(|column| {
+                    if column.hidden {
+                        Cell::default()
                     } else {
-                        header_style
-                    };
+                        let style =
+                            if active_column.is_some_and(|name| Arc::ptr_eq(name, &column.name)) {
+                                cx.editor.theme.get("ui.picker.header.column.active")
+                            } else {
+                                header_column_style
+                            };
 
-                    Cell::from(Span::styled(Cow::from(&*column.name), style))
-                }
-            })));
+                        Cell::from(Span::styled(Cow::from(&*column.name), style))
+                    }
+                }))
+                .style(header_style),
+            );
         }
 
         use tui::widgets::TableState;
@@ -956,7 +974,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview {
-            area.width / 2
+            area.width / 3
         } else {
             area.width
         };
