@@ -63,7 +63,7 @@ impl<'a> Block<'a> {
             title: None,
             borders: Borders::empty(),
             border_style: Style::new(),
-            border_type: BorderType::Plain,
+            border_type: BorderType::Rounded,
             style: Style::new(),
         }
     }
