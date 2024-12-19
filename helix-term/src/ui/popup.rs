@@ -124,15 +124,18 @@ impl<T: Component> Popup<T> {
     }
 
     fn render_info(&mut self, viewport: Rect, editor: &Editor) -> RenderInfo {
-        let mut position = editor.cursor().0.unwrap_or_default();
-        if let Some(old_position) = self
+        let position = self
             .position
-            .filter(|old_position| old_position.row == position.row)
-        {
-            position = old_position;
-        } else {
-            self.position = Some(position);
-        }
+            .or_else(|| editor.cursor().0)
+            .unwrap_or_default();
+        // if let Some(old_position) = self
+        //     .position
+        //     .filter(|old_position| old_position.row == position.row)
+        // {
+        //     position = old_position;
+        // } else {
+        //     self.position = Some(position);
+        // }
 
         let is_menu = self
             .contents
@@ -349,12 +352,12 @@ impl<T: Component> Component for Popup<T> {
                 let scroll_line = (win_height - scroll_height) * scroll
                     / std::cmp::max(1, len.saturating_sub(win_height));
 
-                let mut cell;
+                // let mut cell;
                 for i in 0..win_height {
-                    cell =
+                    let cell =
                         &mut surface[(inner.right() - 1 + border as u16, inner.top() + i as u16)];
 
-                    let half_block = if render_borders { "▌" } else { "▐" };
+                    let half_block = "▋";
 
                     if scroll_line <= i && i < scroll_line + scroll_height {
                         // Draw scroll thumb
