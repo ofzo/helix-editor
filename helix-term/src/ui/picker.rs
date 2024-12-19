@@ -15,6 +15,7 @@ use crate::{
 };
 use futures_util::future::BoxFuture;
 use helix_event::AsyncHook;
+use helix_lsp::lsp::ShowDocumentResult;
 use nucleo::pattern::{CaseMatching, Normalization};
 use nucleo::{Config, Nucleo};
 use thiserror::Error;
@@ -45,7 +46,7 @@ use helix_core::{
     text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
 };
 use helix_view::{
-    editor::Action,
+    editor::{self, Action},
     graphics::{CursorKind, Margin, Modifier, Rect},
     theme::Style,
     view::ViewPosition,
@@ -716,10 +717,18 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let header_style = cx.editor.theme.get("ui.picker.header");
+        let borders = BorderType::line_symbols(BorderType::Rounded);
         for x in inner.left()..inner.right() {
             if let Some(cell) = surface.get_mut(x, inner.y + 1) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
+            }
+        }
+        if self.columns.len() > 1 {
+            for x in inner.left()..inner.right() {
+                if let Some(cell) = surface.get_mut(x, inner.y + 2) {
+                    cell.set_symbol(" ").set_style(header_style);
+                }
             }
         }
 
@@ -819,7 +828,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
-            .highlight_symbol(" > ")
+            .highlight_symbol(" ")
             .column_spacing(1)
             .widths(&self.widths);
 
@@ -1002,7 +1011,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview {
-            area.width / 2
+            area.width / 3
         } else {
             area.width
         };
