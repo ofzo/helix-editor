@@ -75,12 +75,24 @@ pub fn diagnostic<'doc>(
                         })
                 });
             diagnostics_on_line.max_by_key(|d| d.severity).map(|d| {
-                write!(out, "●").ok();
+                // write!(out, "●").ok();
                 match d.severity {
-                    Some(Severity::Error) => error,
-                    Some(Severity::Warning) | None => warning,
-                    Some(Severity::Info) => info,
-                    Some(Severity::Hint) => hint,
+                    Some(Severity::Error) => {
+                        write!(out, "").ok();
+                        error
+                    }
+                    Some(Severity::Warning) | None => {
+                        write!(out, "").ok();
+                        warning
+                    }
+                    Some(Severity::Info) => {
+                        write!(out, "").ok();
+                        info
+                    }
+                    Some(Severity::Hint) => {
+                        write!(out, "").ok();
+                        hint
+                    }
                 }
             })
         },
@@ -97,6 +109,7 @@ pub fn diff<'doc>(
     let added = theme.get("diff.plus.gutter");
     let deleted = theme.get("diff.minus.gutter");
     let modified = theme.get("diff.delta.gutter");
+    // let last_line_in_view = view.estimate_last_doc_line(doc);
     if let Some(diff_handle) = doc.diff_handle() {
         let hunks = diff_handle.load();
         let mut hunk_i = 0;
@@ -120,14 +133,14 @@ pub fn diff<'doc>(
                 }
 
                 let (icon, style) = if hunk.is_pure_insertion() {
-                    ("▍", added)
+                    ("▎", added)
                 } else if hunk.is_pure_removal() {
                     if !first_visual_line {
                         return None;
                     }
                     ("▔", deleted)
                 } else {
-                    ("▍", modified)
+                    ("▎", modified)
                 };
 
                 write!(out, "{}", icon).unwrap();

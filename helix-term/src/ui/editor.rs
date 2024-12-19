@@ -94,7 +94,7 @@ impl EditorView {
         let mut decorations = DecorationManager::default();
 
         if is_focused && config.cursorline {
-            decorations.add_decoration(Self::cursorline(doc, view, theme));
+            decorations.add_decoration(Self::cursorline(doc, view, theme, &editor.mode));
         }
 
         if is_focused && config.cursorcolumn {
@@ -231,15 +231,17 @@ impl EditorView {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
 
-        let statusline_area = view
-            .area
-            .clip_top(view.area.height.saturating_sub(1))
-            .clip_bottom(config.commandline as u16); // -1 from bottom to remove commandline
+        if editor.status_msg.is_none() {
+            let statusline_area = view
+                .area
+                .clip_top(view.area.height.saturating_sub(1))
+                .clip_bottom(config.commandline as u16); // -1 from bottom to remove commandline
 
-        let mut context =
-            statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+            let mut context =
+                statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
 
-        statusline::render(&mut context, statusline_area, surface);
+            statusline::render(&mut context, statusline_area, surface);
+        }
     }
 
     pub fn render_rulers(
@@ -475,12 +477,35 @@ impl EditorView {
         let cursorkind = cursor_shape_config.from_mode(mode);
         let cursor_is_block = cursorkind == CursorKind::Block;
 
-        let selection_scope = theme
-            .find_scope_index_exact("ui.selection")
-            .expect("could not find `ui.selection` scope in the theme!");
-        let primary_selection_scope = theme
-            .find_scope_index_exact("ui.selection.primary")
-            .unwrap_or(selection_scope);
+        // let selection_scope = theme
+        //     .find_scope_index_exact("ui.selection")
+        //     .expect("could not find `ui.selection` scope in the theme!");
+
+        let selection_scope = match mode {
+            Mode::Normal => theme.find_scope_index_exact("ui.selection.normal"),
+            Mode::Select => theme.find_scope_index_exact("ui.selection.select"),
+            Mode::Insert => theme.find_scope_index_exact("ui.selection.insert"),
+        }
+        .unwrap_or(
+            theme
+                .find_scope_index_exact("ui.selection")
+                .expect("could not find `ui.selection` scope in the theme!"),
+        );
+
+        // let primary_selection_scope = theme
+        //     .find_scope_index_exact("ui.selection.primary")
+        //     .unwrap_or(selection_scope);
+
+        let primary_selection_scope = match mode {
+            Mode::Normal => theme.find_scope_index_exact("ui.selection.primary.normal"),
+            Mode::Select => theme.find_scope_index_exact("ui.selection.primary.select"),
+            Mode::Insert => theme.find_scope_index_exact("ui.selection.primary.insert"),
+        }
+        .unwrap_or(
+            theme
+                .find_scope_index_exact("ui.selection.primary")
+                .expect("could not find `ui.selection.primary` scope in the theme!"),
+        );
 
         let base_cursor_scope = theme
             .find_scope_index_exact("ui.cursor")
@@ -790,7 +815,7 @@ impl EditorView {
     }
 
     /// Apply the highlighting on the lines where a cursor is active
-    pub fn cursorline(doc: &Document, view: &View, theme: &Theme) -> impl Decoration {
+    pub fn cursorline(doc: &Document, view: &View, theme: &Theme, mode: &Mode) -> impl Decoration {
         let text = doc.text().slice(..);
         // TODO only highlight the visual line that contains the cursor instead of the full visual line
         let primary_line = doc.selection(view.id).primary().cursor_line(text);
@@ -807,7 +832,13 @@ impl EditorView {
             .map(|range| range.cursor_line(text))
             .collect();
 
-        let primary_style = theme.get("ui.cursorline.primary");
+        let primary_style = match mode {
+            Mode::Normal => theme.try_get("ui.cursorline.primary.normal"),
+            Mode::Select => theme.try_get("ui.cursorline.primary.select"),
+            Mode::Insert => theme.try_get("ui.cursorline.primary.insert"),
+        }
+        .unwrap_or(theme.get("ui.cursorline.primary"));
+
         let secondary_style = theme.get("ui.cursorline.secondary");
         let viewport = view.area;
 
@@ -1582,7 +1613,7 @@ impl Component for EditorView {
         let mut status_msg_width = 0;
 
         // commandline
-        let commandline_msg_pos = if config.commandline { 1 } else { 2 };
+        let commandline_msg_pos = 1; //if config.commandline { 1 } else { 1 };
 
         // render status msg
         if let Some((status_msg, severity)) = &cx.editor.status_msg {
@@ -1621,7 +1652,11 @@ impl Component for EditorView {
             };
             surface.set_string(
                 area.x + area.width.saturating_sub(key_width + macro_width),
-                area.y + area.height.saturating_sub(commandline_msg_pos),
+                area.y
+                    + area
+                        .height
+                        .saturating_sub(commandline_msg_pos)
+                        .saturating_sub(1),
                 disp.get(disp.len().saturating_sub(key_width as usize)..)
                     .unwrap_or(&disp),
                 style,
