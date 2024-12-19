@@ -9,6 +9,7 @@ use helix_view::{
     theme::Style,
     Document, Editor, View,
 };
+use tui::symbols::bar;
 
 use crate::ui::ProgressSpinners;
 
@@ -136,6 +137,7 @@ where
         helix_view::editor::StatusLineElement::FileBaseName => render_file_base_name,
         helix_view::editor::StatusLineElement::FileName => render_file_name,
         helix_view::editor::StatusLineElement::FileAbsolutePath => render_file_absolute_path,
+        helix_view::editor::StatusLineElement::FileRelativePath => render_file_relative_path,
         helix_view::editor::StatusLineElement::FileModificationIndicator => {
             render_file_modification_indicator
         }
@@ -371,6 +373,15 @@ where
             }
             _ => {}
         }
+        if warnings > 0 {
+            write(context, icons.diagnostic().warning().to_string().into());
+            write(context, format!(" {} ", warnings).into());
+        }
+
+        if errors > 0 {
+            write(context, icons.diagnostic().error().to_string().into());
+            write(context, format!(" {} ", warnings).into());
+        }
     }
 }
 
@@ -438,10 +449,20 @@ where
 {
     let position = get_position(context);
     let maxrows = context.doc.text().len_lines();
-    write(
-        context,
-        format!("{}%", (position.row + 1) * 100 / maxrows).into(),
-    );
+
+    let precentage = (position.row + 1) * 100 / maxrows;
+    let bar = match precentage {
+        100 => bar::FULL,
+        87..=99 => bar::SEVEN_EIGHTHS,
+        75..=86 => bar::THREE_QUARTERS,
+        62..=74 => bar::FIVE_EIGHTHS,
+        50..=61 => bar::HALF,
+        38..=49 => bar::THREE_EIGHTHS,
+        15..=37 => bar::ONE_QUARTER,
+        0..=14 => bar::ONE_EIGHTH,
+        _ => bar::FULL,
+    };
+    write(context, format!("{}% {}", precentage, bar).into())
 }
 
 fn render_file_encoding<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -508,7 +529,7 @@ where
             .as_ref()
             .map(|p| p.to_string_lossy())
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
     };
 
     write(context, title.into());
@@ -524,7 +545,28 @@ where
             .as_ref()
             .map(|p| p.to_string_lossy())
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
+    };
+
+    write(context, title.into());
+}
+
+fn render_file_relative_path<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let title = {
+        let path = context.doc.path();
+        let root = &context.doc.repo_root_dir;
+        let path = path
+            .as_ref()
+            .map(|p| {
+                p.strip_prefix(root.as_path())
+                    .unwrap_or(p)
+                    .to_string_lossy()
+            })
+            .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
+        format!("{} ", path)
     };
 
     write(context, title.into());
@@ -565,7 +607,7 @@ where
             .as_ref()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy()))
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
     };
 
     write(context, title.into());

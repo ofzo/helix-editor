@@ -102,6 +102,7 @@ pub fn diff<'doc>(
     let added = theme.get("diff.plus.gutter");
     let deleted = theme.get("diff.minus.gutter");
     let modified = theme.get("diff.delta.gutter");
+    // let last_line_in_view = view.estimate_last_doc_line(doc);
     if let Some(diff_handle) = doc.diff_handle() {
         let hunks = diff_handle.load();
         let mut hunk_i = 0;

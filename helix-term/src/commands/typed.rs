@@ -172,7 +172,7 @@ fn buffer_close_by_ids_impl(
     Ok(())
 }
 
-fn buffer_gather_paths_impl(editor: &mut Editor, args: Args) -> Vec<DocumentId> {
+fn buffer_gather_paths_impl(editor: &mut Editor, args: &Args) -> Vec<DocumentId> {
     // No arguments implies current document
     if args.is_empty() {
         let doc_id = view!(editor).doc;
@@ -216,7 +216,14 @@ fn buffer_close(
         return Ok(());
     }
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
+
+    if let Some(name) = cx.editor.documents.get(&document_ids[0]) {
+        if name.display_name() == SCRATCH_BUFFER_NAME {
+            return quit(cx, args, event);
+        }
+    }
+
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
@@ -229,7 +236,7 @@ fn force_buffer_close(
         return Ok(());
     }
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, true)
 }
 
@@ -497,7 +504,7 @@ fn write_buffer_close(
         },
     )?;
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
@@ -519,7 +526,7 @@ fn force_write_buffer_close(
         },
     )?;
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 

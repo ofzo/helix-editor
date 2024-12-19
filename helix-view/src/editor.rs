@@ -615,6 +615,9 @@ pub enum StatusLineElement {
     /// The file absolute path
     FileAbsolutePath,
 
+    /// The file relative path base on repo or home dir
+    FileRelativePath,
+
     // The file modification indicator
     FileModificationIndicator,
 
@@ -1851,6 +1854,7 @@ impl Editor {
                 true,
                 self.config.clone(),
                 self.syn_loader.clone(),
+                &self.diff_providers
             )?;
 
             let diagnostics =
