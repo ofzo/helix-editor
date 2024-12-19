@@ -7,6 +7,7 @@ use helix_view::{
     theme::Style,
     Document, Editor, View,
 };
+use tui::symbols::bar;
 
 use crate::ui::ProgressSpinners;
 
@@ -143,6 +144,7 @@ where
         helix_view::editor::StatusLineElement::FileBaseName => render_file_base_name,
         helix_view::editor::StatusLineElement::FileName => render_file_name,
         helix_view::editor::StatusLineElement::FileAbsolutePath => render_file_absolute_path,
+        helix_view::editor::StatusLineElement::FileRelativePath => render_file_relative_path,
         helix_view::editor::StatusLineElement::FileModificationIndicator => {
             render_file_modification_indicator
         }
@@ -243,7 +245,7 @@ where
     if warnings > 0 {
         write(
             context,
-            "●".to_string(),
+            "◎".to_string(),
             Some(context.editor.theme.get("warning")),
         );
         write(context, format!(" {} ", warnings), None);
@@ -252,7 +254,7 @@ where
     if errors > 0 {
         write(
             context,
-            "●".to_string(),
+            "⊗".to_string(),
             Some(context.editor.theme.get("error")),
         );
         write(context, format!(" {} ", errors), None);
@@ -285,7 +287,7 @@ where
     if warnings > 0 {
         write(
             context,
-            "●".to_string(),
+            "◎".to_string(),
             Some(context.editor.theme.get("warning")),
         );
         write(context, format!(" {} ", warnings), None);
@@ -294,10 +296,10 @@ where
     if errors > 0 {
         write(
             context,
-            "●".to_string(),
+            "⊗".to_string(),
             Some(context.editor.theme.get("error")),
         );
-        write(context, format!(" {} ", errors), None);
+        write(context, format!(" {} ", warnings), None);
     }
 }
 
@@ -363,11 +365,20 @@ where
 {
     let position = get_position(context);
     let maxrows = context.doc.text().len_lines();
-    write(
-        context,
-        format!("{}%", (position.row + 1) * 100 / maxrows),
-        None,
-    );
+
+    let precentage = (position.row + 1) * 100 / maxrows;
+    let bar = match precentage {
+        100 => bar::FULL,
+        87..=99 => bar::SEVEN_EIGHTHS,
+        75..=86 => bar::THREE_QUARTERS,
+        62..=74 => bar::FIVE_EIGHTHS,
+        50..=61 => bar::HALF,
+        38..=49 => bar::THREE_EIGHTHS,
+        15..=37 => bar::ONE_QUARTER,
+        0..=14 => bar::ONE_EIGHTH,
+        _ => bar::FULL,
+    };
+    write(context, format!("{}% {}", precentage, bar), None)
 }
 
 fn render_file_encoding<F>(context: &mut RenderContext, write: F)
@@ -425,7 +436,7 @@ where
             .as_ref()
             .map(|p| p.to_string_lossy())
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
     };
 
     write(context, title, None);
@@ -441,7 +452,28 @@ where
             .as_ref()
             .map(|p| p.to_string_lossy())
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
+    };
+
+    write(context, title, None);
+}
+
+fn render_file_relative_path<F>(context: &mut RenderContext, write: F)
+where
+    F: Fn(&mut RenderContext, String, Option<Style>) + Copy,
+{
+    let title = {
+        let path = context.doc.path();
+        let root = &context.doc.repo_root_dir;
+        let path = path
+            .as_ref()
+            .map(|p| {
+                p.strip_prefix(root.as_path())
+                    .unwrap_or(p)
+                    .to_string_lossy()
+            })
+            .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
+        format!("{} ", path)
     };
 
     write(context, title, None);
@@ -484,7 +516,7 @@ where
             .as_ref()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy()))
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-        format!(" {} ", path)
+        format!("{} ", path)
     };
 
     write(context, title, None);
@@ -520,7 +552,15 @@ where
         .unwrap_or_default()
         .to_string();
 
-    write(context, head, None);
+    write(
+        context,
+        if head.len() > 0 {
+            format!(" {}", head)
+        } else {
+            format!("")
+        },
+        Some(context.editor.theme.get("ui.statusline.version_control")),
+    )
 }
 
 fn render_register<F>(context: &mut RenderContext, write: F)

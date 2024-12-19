@@ -152,5 +152,6 @@ FLAGS:
 
     let exit_code = app.run(&mut EventStream::new()).await?;
 
+    print!("\x1b[6 q");
     Ok(exit_code)
 }

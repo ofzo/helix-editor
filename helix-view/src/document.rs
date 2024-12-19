@@ -214,6 +214,7 @@ pub struct DocumentColorSwatches {
     pub color_swatches: Vec<InlineAnnotation>,
     pub colors: Vec<Highlight>,
     pub color_swatches_padding: Vec<InlineAnnotation>,
+    pub repo_root_dir: Arc<PathBuf>
 }
 
 /// Inlay hints for a single `(Document, View)` combo.
@@ -719,6 +720,7 @@ impl Document {
             jump_labels: HashMap::new(),
             color_swatches: None,
             color_swatch_controller: TaskController::new(),
+            repo_root_dir: Arc::new(PathBuf::from("/")),
         }
     }
 
@@ -736,6 +738,7 @@ impl Document {
         mut encoding: Option<&'static Encoding>,
         config_loader: Option<Arc<ArcSwap<syntax::Loader>>>,
         config: Arc<dyn DynAccess<Config>>,
+        provider_registry: &DiffProviderRegistry,
     ) -> Result<Self, DocumentOpenError> {
         // If the path is not a regular file (e.g.: /dev/random) it should not be opened.
         if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
@@ -771,6 +774,8 @@ impl Document {
 
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
+
+        doc.repo_root_dir =  provider_registry.get_repo_root(path);
 
         Ok(doc)
     }

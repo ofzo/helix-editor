@@ -358,9 +358,9 @@ impl<T: Item + 'static> Component for Menu<T> {
 
             let mut cell;
             for i in 0..win_height {
-                cell = &mut surface[(area.right() - 1, area.top() + i as u16)];
+                cell = &mut surface[(area.right(), area.top() + i as u16)];
 
-                let half_block = if render_borders { "▌" } else { "▐" };
+                let half_block = "▋";
 
                 if scroll_line <= i && i < scroll_line + scroll_height {
                     // Draw scroll thumb
