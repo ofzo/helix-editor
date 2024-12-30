@@ -4,6 +4,7 @@ use helix_core::indent::IndentStyle;
 use helix_core::{coords_at_pos, encoding, Position};
 use helix_lsp::lsp::DiagnosticSeverity;
 use helix_view::document::DEFAULT_LANGUAGE_NAME;
+use helix_view::icons::ICONS;
 use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
     graphics::Rect,
@@ -261,6 +262,26 @@ where
             _ => {}
         }
     }
+
+    let icons = ICONS.load();
+
+    if warnings > 0 {
+        write(
+            context,
+            icons.diagnostic().warning().to_string(),
+            Some(context.editor.theme.get("warning")),
+        );
+        write(context, format!(" {} ", warnings), None);
+    }
+
+    if errors > 0 {
+        write(
+            context,
+            icons.diagnostic().error().to_string(),
+            Some(context.editor.theme.get("error")),
+        );
+        write(context, format!(" {} ", errors), None);
+    }
 }
 
 fn render_workspace_diagnostics<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -327,6 +348,24 @@ where
             }
             _ => {}
         }
+    let icons = ICONS.load();
+
+    if warnings > 0 {
+        write(
+            context,
+            icons.diagnostic().warning().to_string(),
+            Some(context.editor.theme.get("warning")),
+        );
+        write(context, format!(" {} ", warnings), None);
+    }
+
+    if errors > 0 {
+        write(
+            context,
+            icons.diagnostic().error().to_string(),
+            Some(context.editor.theme.get("error")),
+        );
+        write(context, format!(" {} ", errors), None);
     }
 }
 
@@ -440,9 +479,13 @@ fn render_file_type<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let file_type = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
+    let icons = ICONS.load();
 
-    write(context, format!(" {} ", file_type).into());
+    let icon = icons
+        .mime()
+        .get(context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME));
+
+    write(context, format!(" {} ", icon), None);
 }
 
 fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -539,13 +582,18 @@ fn render_version_control<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let head = context
-        .doc
-        .version_control_head()
-        .unwrap_or_default()
-        .to_string();
+    let head = context.doc.version_control_head().unwrap_or_default();
 
-    write(context, head.into());
+    let icons = ICONS.load();
+    let icon = icons.vcs().icon();
+
+    let vcs = if head.is_empty() {
+        format!("{head}")
+    } else {
+        format!("{icon} {head}")
+    };
+
+    write(context, vcs, None);
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
