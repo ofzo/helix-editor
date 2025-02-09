@@ -218,12 +218,6 @@ fn buffer_close(
 
     let document_ids = buffer_gather_paths_impl(cx.editor, &args);
 
-    if let Some(name) = cx.editor.documents.get(&document_ids[0]) {
-        if name.display_name() == SCRATCH_BUFFER_NAME {
-            return quit(cx, args, event);
-        }
-    }
-
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
