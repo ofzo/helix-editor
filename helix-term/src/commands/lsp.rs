@@ -1408,8 +1408,16 @@ fn compute_inlay_hints_for_view(
                 if let Some(true) = hint.padding_left {
                     padding_before_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
                 }
+                let re = regex::Regex::new(r"<.+>").unwrap();
 
-                inlay_hints_vec.push(InlineAnnotation::new(char_idx, label));
+                inlay_hints_vec.push(InlineAnnotation::new(
+                    char_idx,
+                    if label.len() >= 20 {
+                        re.replace(&label, "<...>").into_owned()
+                    } else {
+                        label
+                    },
+                ));
 
                 if let Some(true) = hint.padding_right {
                     padding_after_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
