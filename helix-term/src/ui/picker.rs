@@ -48,6 +48,7 @@ use helix_core::{
 use helix_view::{
     editor::{self, Action},
     graphics::{CursorKind, Margin, Modifier, Rect},
+    input::KeyEvent,
     theme::Style,
     view::ViewPosition,
     Document, DocumentId, Editor,
@@ -259,6 +260,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     widths: Vec<Constraint>,
 
     callback_fn: PickerCallback<T>,
+    custom_key_handlers: PickerKeyHandler,
 
     pub truncate_start: bool,
     /// Caches paths to documents
@@ -386,11 +388,17 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             completion_height: 0,
             widths,
             preview_cache: HashMap::new(),
+            custom_key_handlers: HashMap::new(),
             read_buffer: Vec::with_capacity(1024),
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
         }
+    }
+
+    pub fn with_key_handler(mut self, handlers: PickerKeyHandler) -> Self {
+        self.custom_key_handlers = handlers;
+        self
     }
 
     pub fn injector(&self) -> Injector<T, D> {
@@ -508,6 +516,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn toggle_preview(&mut self) {
         self.show_preview = !self.show_preview;
+    }
+
+    fn custom_event_handler(&mut self, event: &KeyEvent, cx: &mut Context) -> EventResult {
+        if let Some(callback) = self.custom_key_handlers.get(event) {
+            callback(cx);
+            EventResult::Consumed(None)
+        } else {
+            EventResult::Ignored(None)
+        }
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
@@ -1137,8 +1154,13 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
-            _ => {
-                self.prompt_handle_event(event, ctx);
+            key_event => {
+                if !matches!(
+                    self.custom_event_handler(&key_event, ctx),
+                    EventResult::Consumed(_)
+                ) {
+                    self.prompt_handle_event(event, ctx);
+                };
             }
         }
 
@@ -1181,3 +1203,4 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+type PickerKeyHandler = HashMap<KeyEvent, Box<dyn Fn(&mut Context)>>;
