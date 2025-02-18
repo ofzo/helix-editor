@@ -1081,6 +1081,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             EventResult::Consumed(Some(callback))
         };
 
+        if let EventResult::Consumed(_) = self.custom_event_handler(&key_event, ctx) {
+            return EventResult::Consumed(None);
+        }
+
         match key_event {
             shift!(Tab) | key!(Up) | ctrl!('p') => {
                 self.move_by(1, Direction::Backward);
@@ -1156,13 +1160,8 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
-            key_event => {
-                if !matches!(
-                    self.custom_event_handler(&key_event, ctx),
-                    EventResult::Consumed(_)
-                ) {
-                    self.prompt_handle_event(event, ctx);
-                };
+            _ => {
+                self.prompt_handle_event(event, ctx);
             }
         }
 
