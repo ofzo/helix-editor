@@ -462,7 +462,7 @@ pub fn file_explorer(
             path,
             |path| {
                 path.parent()
-                    .map(|p| p.display().to_string())
+                    .map(|p| format!("{}{}", p.display(), std::path::MAIN_SEPARATOR))
                     .unwrap_or_default()
             },
             |cursor, cx, path, to_create_str| {
@@ -632,7 +632,7 @@ pub fn file_explorer(
             path,
             |path| {
                 path.parent()
-                    .map(|p| p.display().to_string())
+                    .map(|p| format!("{}{}", p.display(), std::path::MAIN_SEPARATOR))
                     .unwrap_or_default()
             },
             |cursor, cx, copy_from, copy_to_str| {
