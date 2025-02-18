@@ -16,7 +16,7 @@ mod text_decorations;
 
 use crate::compositor::{Compositor, Context};
 use crate::job::{self, Callback};
-use crate::{alt, declare_key_handlers, filter_picker_entry};
+use crate::{alt, filter_picker_entry};
 pub use completion::Completion;
 pub use editor::EditorView;
 use helix_core::hashmap;
@@ -441,10 +441,9 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
     )
     .with_cursor(cursor.unwrap_or_default())
     .with_preview(|_editor, (path, _is_dir)| Some((path.as_path().into(), None)))
-    .with_key_handlers(declare_key_handlers! {
-        |cx, (path, _is_dir): &(PathBuf, bool), cursor|,
+    .with_key_handlers(hashmap! {
         // create
-        alt!('n') => {
+        alt!('n') => Box::new(|cx: &mut Context, (path, _is_dir): &(PathBuf, bool), cursor: u32| {
             create_file_operation_prompt(
                 cursor,
                 "create:",
@@ -495,9 +494,9 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
 
                 create_op(cursor, cx, root, to_create_str, &to_create)
             })
-        },
+        }) as Box<dyn Fn(&mut Context, &(PathBuf, bool), u32) + 'static>,
         // move
-        alt!('m') => {
+        alt!('m') => Box::new(|cx: &mut Context, (path, _is_dir): &(PathBuf, bool), cursor: u32|{
             create_file_operation_prompt(
                 cursor,
                 "move:",
@@ -546,9 +545,9 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
 
                 move_op(cursor, cx, root, move_to_str, move_from)
             })
-        },
+        }) as Box<dyn Fn(&mut Context, &(PathBuf, bool), u32) + 'static>,
         // delete
-        alt!('d') => {
+        alt!('d') => Box::new(|cx: &mut Context, (path, _is_dir): &(PathBuf, bool), cursor: u32|{
             create_file_operation_prompt(
                 cursor,
                 "delete? (y/n):",
@@ -590,9 +589,9 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
                     None
                 }
             })
-        },
+        }) as Box<dyn Fn(&mut Context, &(PathBuf, bool), u32) + 'static>,
         // copy file / directory
-        alt!('c') => {
+        alt!('c') => Box::new(|cx: &mut Context, (path, _is_dir): &(PathBuf, bool), cursor: u32|{
             create_file_operation_prompt(
                 cursor,
                 "copy-to:",
@@ -641,9 +640,9 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
                     copy_op(cursor, cx, root, copy_to_str, copy_from)
                 }
             })
-        },
+        }) as Box<dyn Fn(&mut Context, &(PathBuf, bool), u32) + 'static>,
         // copy path into register
-        alt!('y') => {
+        alt!('y') => Box::new(|cx: &mut Context, (path, _is_dir): &(PathBuf, bool), _cursor: u32|{
             let register = cx.editor.selected_register.unwrap_or(
                 cx.editor.config().default_yank_register
             );
@@ -655,7 +654,7 @@ pub fn file_explorer(cursor: Option<u32>, root: PathBuf, editor: &Editor) -> Res
                 Ok(()) => cx.editor.set_status(message),
                 Err(err) => cx.editor.set_error(err.to_string())
             };
-        }
+        }) as Box<dyn Fn(&mut Context, &(PathBuf, bool), u32) + 'static>
     });
 
     Ok(picker)
