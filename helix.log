@@ -1,0 +1,56 @@
+2025-03-15T22:10:02.151 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "diagnostic". Invalid underline style: "none"
+2025-03-15T22:10:02.151 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "diagnostic.deprecated". Invalid underline style: ""
+2025-03-15T22:10:02.151 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "function.method". Malformed ANSI: pruple700
+2025-03-15T22:10:55.326 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.git" true
+2025-03-15T22:11:07.676 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:08.026 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:08.239 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:08.389 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:08.576 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:08.713 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/.cargo" true
+2025-03-15T22:11:35.896 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(4)), original request likely timed out
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(5)), original request likely timed out
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(3)), original request likely timed out
+2025-03-15T22:11:35.897 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:35.897 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:36.086 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:36.086 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:36.290 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:36.291 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:36.463 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:36.463 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:36.667 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:36.667 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:37.042 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:37.043 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:37.418 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:37.418 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(12)), original request likely timed out
+2025-03-15T22:11:37.552 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:37.553 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(13)), original request likely timed out
+2025-03-15T22:11:37.766 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:37.766 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:37.766 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(14)), original request likely timed out
+2025-03-15T22:11:37.766 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:38.446 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:38.447 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:38.447 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:38.648 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:38.649 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:38.894 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:11:38.894 helix_term::handlers::signature_help [ERROR] signature help request failed: protocol error: ServerError(-32801): content modified
+2025-03-15T22:11:48.479 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(20)), original request likely timed out
+2025-03-15T22:11:55.316 helix_lsp::transport [ERROR] Tried sending response into a closed channel (id=Num(37)), original request likely timed out
+2025-03-15T22:12:33.138 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "diagnostic". Invalid underline style: "none"
+2025-03-15T22:12:33.138 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "diagnostic.deprecated". Invalid underline style: ""
+2025-03-15T22:12:33.138 helix_view::theme [WARN] Theme 'arrebol': Failed to parse style for key "function.method". Malformed ANSI: pruple700
+2025-03-15T22:14:19.848 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/book" true
+2025-03-15T22:14:20.248 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/book/custom.css" false
+2025-03-15T22:14:25.350 helix_term::ui [WARN] path "/Volumes/SSD/codespace/helix-editor/contrib" true
+2025-03-15T22:14:39.590 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:14:41.314 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:14:41.314 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:14:41.314 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
+2025-03-15T22:14:44.205 helix_lsp::transport [ERROR] rust-analyzer <- ServerError(-32801): content modified
