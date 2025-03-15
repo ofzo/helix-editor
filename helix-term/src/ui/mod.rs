@@ -16,7 +16,7 @@ mod text_decorations;
 
 use crate::compositor::{Compositor, Context};
 use crate::job::{self, Callback};
-use crate::{alt, filter_picker_entry};
+use crate::{alt, filter_picker_entry, key};
 pub use completion::Completion;
 pub use editor::EditorView;
 use helix_core::hashmap;
@@ -660,12 +660,30 @@ pub fn file_explorer(
         |(path, is_dir): &ExplorerItem, (root, directory_style): &ExplorerData| {
             let name = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
             if *is_dir {
-                Span::styled(format!("{}/", name), *directory_style).into()
+                Span::styled(format!("+ {}/", name), *directory_style).into()
             } else {
-                name.into()
+                format!(" {}", name).into()
             }
         },
     )];
+
+    let back_to_parent: KeyHandler = Box::new(|cx, (path, _), data, cursor| {
+        let path = helix_stdx::path::normalize(path);
+        let new_root = path.parent();
+        if let Some(new_root) = new_root {
+            let new_root = new_root.parent();
+            if let Some(new_root) = new_root {
+                let new_root = helix_stdx::path::normalize(new_root);
+                refresh_file_explorer(cursor, cx, new_root);
+            }
+        }
+    });
+    let forword_to_cursor: KeyHandler = Box::new(|cx, (path, is_dir), data, cursor| {
+        let path = helix_stdx::path::normalize(path);
+        if path.is_dir() {
+            refresh_file_explorer(cursor, cx, path);
+        }
+    });
 
     let picker = Picker::new(
         columns,
@@ -703,6 +721,8 @@ pub fn file_explorer(
         alt!('d') => delete,
         alt!('c') => copy,
         alt!('y') => yank_path,
+        key!(Left) => back_to_parent,
+        key!(Right) => forword_to_cursor
     });
 
     Ok(picker)
