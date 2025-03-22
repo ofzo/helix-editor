@@ -214,6 +214,7 @@ pub struct Document {
     // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
     // `ArcSwap` directly.
     syn_loader: Arc<ArcSwap<syntax::Loader>>,
+    pub repo_root_dir: Arc<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -221,7 +222,6 @@ pub struct DocumentColorSwatches {
     pub color_swatches: Vec<InlineAnnotation>,
     pub colors: Vec<syntax::Highlight>,
     pub color_swatches_padding: Vec<InlineAnnotation>,
-    pub repo_root_dir: Arc<PathBuf>
 }
 
 /// Inlay hints for a single `(Document, View)` combo.
@@ -789,7 +789,7 @@ impl Document {
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
 
-        doc.repo_root_dir =  provider_registry.get_repo_root(path);
+        doc.repo_root_dir = provider_registry.get_repo_root(path);
 
         Ok(doc)
     }

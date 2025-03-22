@@ -348,6 +348,7 @@ where
             }
             _ => {}
         }
+    }
     let icons = ICONS.load();
 
     if warnings > 0 {
@@ -624,7 +625,11 @@ where
         format!("{icon} {head}")
     };
 
-    write(context, vcs, None);
+    write(
+        context,
+        vcs,
+        Some(context.editor.theme.get("ui.statusline.version_control")),
+    );
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
