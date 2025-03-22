@@ -149,7 +149,7 @@ pub struct Markdown {
 impl Markdown {
     const TEXT_STYLE: &'static str = "ui.text";
     const BLOCK_STYLE: &'static str = "markup.raw.inline";
-    const RULE_STYLE: &'static str = "punctuation.special";
+    // const RULE_STYLE: &'static str = "punctuation.special";
     const UNNUMBERED_LIST_STYLE: &'static str = "markup.list.unnumbered";
     const NUMBERED_LIST_STYLE: &'static str = "markup.list.numbered";
     const HEADING_STYLES: [&'static str; 6] = [
@@ -200,7 +200,6 @@ impl Markdown {
         let code_style = get_theme(Self::BLOCK_STYLE);
         let numbered_list_style = get_theme(Self::NUMBERED_LIST_STYLE);
         let unnumbered_list_style = get_theme(Self::UNNUMBERED_LIST_STYLE);
-        let rule_style = get_theme(Self::RULE_STYLE);
         let heading_styles: Vec<Style> = Self::HEADING_STYLES
             .iter()
             .map(|key| get_theme(key))
