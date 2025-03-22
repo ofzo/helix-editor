@@ -200,7 +200,6 @@ impl Markdown {
         let code_style = get_theme(Self::BLOCK_STYLE);
         let numbered_list_style = get_theme(Self::NUMBERED_LIST_STYLE);
         let unnumbered_list_style = get_theme(Self::UNNUMBERED_LIST_STYLE);
-        // let rule_style = get_theme(Self::RULE_STYLE);
         let heading_styles: Vec<Style> = Self::HEADING_STYLES
             .iter()
             .map(|key| get_theme(key))
