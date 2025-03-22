@@ -207,6 +207,7 @@ pub struct Document {
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
+    pub repo_root_dir: Arc<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -214,7 +215,6 @@ pub struct DocumentColorSwatches {
     pub color_swatches: Vec<InlineAnnotation>,
     pub colors: Vec<Highlight>,
     pub color_swatches_padding: Vec<InlineAnnotation>,
-    pub repo_root_dir: Arc<PathBuf>
 }
 
 /// Inlay hints for a single `(Document, View)` combo.
@@ -775,7 +775,7 @@ impl Document {
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
 
-        doc.repo_root_dir =  provider_registry.get_repo_root(path);
+        doc.repo_root_dir = provider_registry.get_repo_root(path);
 
         Ok(doc)
     }
