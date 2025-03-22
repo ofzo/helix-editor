@@ -566,7 +566,11 @@ where
         format!("{icon} {head}")
     };
 
-    write(context, vcs, None);
+    write(
+        context,
+        vcs,
+        Some(context.editor.theme.get("ui.statusline.version_control")),
+    );
 }
 
 fn render_register<F>(context: &mut RenderContext, write: F)
