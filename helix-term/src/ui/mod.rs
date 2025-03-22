@@ -669,6 +669,10 @@ pub fn file_explorer(
 
     let back_to_parent: KeyHandler = Box::new(|cx, (path, _), data, cursor| {
         let path = helix_stdx::path::normalize(path);
+        let root = data.0.clone();
+        if root.parent().unwrap() == path {
+            return;
+        }
         let new_root = path.parent();
         if let Some(new_root) = new_root {
             let new_root = new_root.parent();
@@ -678,18 +682,27 @@ pub fn file_explorer(
             }
         }
     });
-    let forword_to_cursor: KeyHandler = Box::new(|cx, (path, is_dir), data, cursor| {
+    let forword_to_cursor: KeyHandler = Box::new(|cx, (path, _is_dir), data, cursor| {
         let path = helix_stdx::path::normalize(path);
+        let root = data.0.clone();
+        if root.parent().unwrap() == path {
+            return;
+        }
         if path.is_dir() {
             refresh_file_explorer(cursor, cx, path);
         }
     });
 
+    let cwd = helix_stdx::env::current_working_dir();
+    let location = root
+        .strip_prefix(cwd)
+        .unwrap_or(Path::new("/"))
+        .to_string_lossy();
     let picker = Picker::new(
         columns,
         0,
         directory_content,
-        (root, directory_style),
+        (root.clone(), directory_style),
         move |cx, (path, is_dir): &ExplorerItem, action| {
             if *is_dir {
                 let new_root = helix_stdx::path::normalize(path);
@@ -723,7 +736,8 @@ pub fn file_explorer(
         alt!('y') => yank_path,
         key!(Left) => back_to_parent,
         key!(Right) => forword_to_cursor
-    });
+    })
+    .set_title(format!("{}", location));
 
     Ok(picker)
 }
