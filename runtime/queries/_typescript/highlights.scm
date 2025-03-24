@@ -39,11 +39,11 @@
     (identifier) @variable.parameter))
 
 ; (p?: t)
-; (p?: t = 1) // Invalid but still posible to hihglight.
+; (p?: t = 1) // Invalid but still possible to highlight.
 (optional_parameter 
   (identifier) @variable.parameter)
 
-; (...p?: t) // Invalid but still posible to hihglight.
+; (...p?: t) // Invalid but still possible to highlight.
 (optional_parameter
   (rest_pattern
     (identifier) @variable.parameter))
@@ -59,7 +59,7 @@
     (pair_pattern
       value: (identifier) @variable.parameter)))
 
-; ([ p ]?: t[]) // Invalid but still posible to hihglight.
+; ([ p ]?: t[]) // Invalid but still possible to highlight.
 (optional_parameter
   (array_pattern
     (identifier) @variable.parameter))
@@ -108,6 +108,8 @@
 ; -----
 
 (type_identifier) @type
+(type_parameter
+  name: (type_identifier) @type.parameter)
 (predefined_type) @type.builtin
 
 ; Type arguments and parameters
@@ -131,10 +133,3 @@
 [
   (template_literal_type)
 ] @string
-
-; Tokens
-; ------
-
-(template_type
-  "${" @punctuation.special
-  "}" @punctuation.special) @embedded

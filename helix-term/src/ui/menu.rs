@@ -1,5 +1,3 @@
-use std::{borrow::Cow, path::PathBuf};
-
 use crate::{
     compositor::{Callback, Component, Compositor, Context, Event, EventResult},
     ctrl, key, shift,
@@ -8,39 +6,14 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use fuzzy_matcher::skim::SkimMatcherV2 as Matcher;
-use fuzzy_matcher::FuzzyMatcher;
-
 use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor};
 use tui::layout::Constraint;
 
-pub trait Item {
+pub trait Item: Sync + Send + 'static {
     /// Additional editor state that is used for label calculation.
-    type Data;
+    type Data: Sync + Send + 'static;
 
     fn format(&self, data: &Self::Data) -> Row;
-
-    fn sort_text(&self, data: &Self::Data) -> Cow<str> {
-        let label: String = self.format(data).cell_text().collect();
-        label.into()
-    }
-
-    fn filter_text(&self, data: &Self::Data) -> Cow<str> {
-        let label: String = self.format(data).cell_text().collect();
-        label.into()
-    }
-}
-
-impl Item for PathBuf {
-    /// Root prefix to strip.
-    type Data = PathBuf;
-
-    fn format(&self, root_path: &Self::Data) -> Row {
-        self.strip_prefix(root_path)
-            .unwrap_or(self)
-            .to_string_lossy()
-            .into()
-    }
 }
 
 pub type MenuCallback<T> = Box<dyn Fn(&mut Editor, Option<&T>, MenuEvent)>;
@@ -51,9 +24,8 @@ pub struct Menu<T: Item> {
 
     cursor: Option<usize>,
 
-    matcher: Box<Matcher>,
     /// (index, score)
-    matches: Vec<(usize, i64)>,
+    matches: Vec<(u32, u32)>,
 
     widths: Vec<Constraint>,
 
@@ -75,11 +47,10 @@ impl<T: Item> Menu<T> {
         editor_data: <T as Item>::Data,
         callback_fn: impl Fn(&mut Editor, Option<&T>, MenuEvent) + 'static,
     ) -> Self {
-        let matches = (0..options.len()).map(|i| (i, 0)).collect();
+        let matches = (0..options.len() as u32).map(|i| (i, 0)).collect();
         Self {
             options,
             editor_data,
-            matcher: Box::new(Matcher::default().ignore_case()),
             matches,
             cursor: None,
             widths: Vec::new(),
@@ -91,28 +62,28 @@ impl<T: Item> Menu<T> {
         }
     }
 
-    pub fn score(&mut self, pattern: &str) {
-        // reuse the matches allocation
-        self.matches.clear();
-        self.matches.extend(
-            self.options
-                .iter()
-                .enumerate()
-                .filter_map(|(index, option)| {
-                    let text = option.filter_text(&self.editor_data);
-                    // TODO: using fuzzy_indices could give us the char idx for match highlighting
-                    self.matcher
-                        .fuzzy_match(&text, pattern)
-                        .map(|score| (index, score))
-                }),
-        );
-        // Order of equal elements needs to be preserved as LSP preselected items come in order of high to low priority
-        self.matches.sort_by_key(|(_, score)| -score);
-
-        // reset cursor position
+    pub fn reset_cursor(&mut self) {
         self.cursor = None;
         self.scroll = 0;
         self.recalculate = true;
+    }
+
+    pub fn update_options(&mut self) -> (&mut Vec<(u32, u32)>, &mut Vec<T>) {
+        self.recalculate = true;
+        (&mut self.matches, &mut self.options)
+    }
+
+    pub fn ensure_cursor_in_bounds(&mut self) {
+        if self.matches.is_empty() {
+            self.cursor = None;
+            self.scroll = 0;
+        } else {
+            self.scroll = 0;
+            self.recalculate = true;
+            if let Some(cursor) = &mut self.cursor {
+                *cursor = (*cursor).min(self.matches.len() - 1)
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -201,7 +172,7 @@ impl<T: Item> Menu<T> {
         self.cursor.and_then(|cursor| {
             self.matches
                 .get(cursor)
-                .map(|(index, _score)| &self.options[*index])
+                .map(|(index, _score)| &self.options[*index as usize])
         })
     }
 
@@ -209,7 +180,7 @@ impl<T: Item> Menu<T> {
         self.cursor.and_then(|cursor| {
             self.matches
                 .get(cursor)
-                .map(|(index, _score)| &mut self.options[*index])
+                .map(|(index, _score)| &mut self.options[*index as usize])
         })
     }
 
@@ -223,9 +194,9 @@ impl<T: Item> Menu<T> {
 }
 
 impl<T: Item + PartialEq> Menu<T> {
-    pub fn replace_option(&mut self, old_option: T, new_option: T) {
+    pub fn replace_option(&mut self, old_option: &impl PartialEq<T>, new_option: T) {
         for option in &mut self.options {
-            if old_option == *option {
+            if old_option == option {
                 *option = new_option;
                 break;
             }
@@ -323,6 +294,7 @@ impl<T: Item + 'static> Component for Menu<T> {
             .try_get("ui.menu")
             .unwrap_or_else(|| theme.get("ui.text"));
         let selected = theme.get("ui.menu.selected");
+
         surface.clear_with(area, style);
 
         let scroll = self.scroll;
@@ -332,17 +304,13 @@ impl<T: Item + 'static> Component for Menu<T> {
             .iter()
             .map(|(index, _score)| {
                 // (index, self.options.get(*index).unwrap()) // get_unchecked
-                &self.options[*index] // get_unchecked
+                &self.options[*index as usize] // get_unchecked
             })
             .collect();
 
         let len = options.len();
 
         let win_height = area.height as usize;
-
-        const fn div_ceil(a: usize, b: usize) -> usize {
-            (a + b - 1) / b
-        }
 
         let rows = options
             .iter()
@@ -365,22 +333,26 @@ impl<T: Item + 'static> Component for Menu<T> {
             false,
         );
 
-        if let Some(cursor) = self.cursor {
-            let offset_from_top = cursor - scroll;
-            let left = &mut surface[(area.left(), area.y + offset_from_top as u16)];
-            left.set_style(selected);
-            let right = &mut surface[(
-                area.right().saturating_sub(1),
-                area.y + offset_from_top as u16,
-            )];
-            right.set_style(selected);
+        let render_borders = cx.editor.menu_border();
+
+        if !render_borders {
+            if let Some(cursor) = self.cursor {
+                let offset_from_top = cursor - scroll;
+                let left = &mut surface[(area.left(), area.y + offset_from_top as u16)];
+                left.set_style(selected);
+                let right = &mut surface[(
+                    area.right().saturating_sub(1),
+                    area.y + offset_from_top as u16,
+                )];
+                right.set_style(selected);
+            }
         }
 
         let fits = len <= win_height;
 
         let scroll_style = theme.get("ui.menu.scroll");
         if !fits {
-            let scroll_height = div_ceil(win_height.pow(2), len).min(win_height);
+            let scroll_height = win_height.pow(2).div_ceil(len).min(win_height);
             let scroll_line = (win_height - scroll_height) * scroll
                 / std::cmp::max(1, len.saturating_sub(win_height));
 
@@ -388,13 +360,15 @@ impl<T: Item + 'static> Component for Menu<T> {
             for i in 0..win_height {
                 cell = &mut surface[(area.right() - 1, area.top() + i as u16)];
 
-                cell.set_symbol("▐"); // right half block
+                let half_block = if render_borders { "▌" } else { "▐" };
 
                 if scroll_line <= i && i < scroll_line + scroll_height {
                     // Draw scroll thumb
+                    cell.set_symbol(half_block);
                     cell.set_fg(scroll_style.fg.unwrap_or(helix_view::theme::Color::Reset));
-                } else {
+                } else if !render_borders {
                     // Draw scroll track
+                    cell.set_symbol(half_block);
                     cell.set_fg(scroll_style.bg.unwrap_or(helix_view::theme::Color::Reset));
                 }
             }

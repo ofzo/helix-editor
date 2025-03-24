@@ -16,6 +16,7 @@ pub enum EventResult {
 }
 
 use crate::job::Jobs;
+use crate::ui::picker;
 use helix_view::Editor;
 
 pub use helix_view::input::Event;
@@ -26,54 +27,13 @@ pub struct Context<'a> {
     pub jobs: &'a mut Jobs,
 }
 
-impl<'a> Context<'a> {
+impl Context<'_> {
     /// Waits on all pending jobs, and then tries to flush all pending write
     /// operations for all documents.
     pub fn block_try_flush_writes(&mut self) -> anyhow::Result<()> {
         tokio::task::block_in_place(|| helix_lsp::block_on(self.jobs.finish(self.editor, None)))?;
         tokio::task::block_in_place(|| helix_lsp::block_on(self.editor.flush_writes()))?;
         Ok(())
-    }
-
-    /// Purpose: to test `handle_event` without escalating the test case to integration test
-    /// Usage:
-    /// ```
-    /// let mut editor = Context::dummy_editor();
-    /// let mut jobs = Context::dummy_jobs();
-    /// let mut cx = Context::dummy(&mut jobs, &mut editor);
-    /// ```
-    #[cfg(test)]
-    pub fn dummy(jobs: &'a mut Jobs, editor: &'a mut helix_view::Editor) -> Context<'a> {
-        Context {
-            jobs,
-            scroll: None,
-            editor,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn dummy_jobs() -> Jobs {
-        Jobs::new()
-    }
-
-    #[cfg(test)]
-    pub fn dummy_editor() -> Editor {
-        use crate::config::Config;
-        use arc_swap::{access::Map, ArcSwap};
-        use helix_core::syntax::{self, Configuration};
-        use helix_view::theme;
-        use std::sync::Arc;
-
-        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
-        Editor::new(
-            Rect::new(0, 0, 60, 120),
-            Arc::new(theme::Loader::new(&[])),
-            Arc::new(syntax::Loader::new(Configuration { language: vec![] })),
-            Arc::new(Arc::new(Map::new(
-                Arc::clone(&config),
-                |config: &Config| &config.editor,
-            ))),
-        )
     }
 }
 
@@ -113,21 +73,6 @@ pub trait Component: Any + AnyComponent {
     fn id(&self) -> Option<&'static str> {
         None
     }
-
-    #[cfg(test)]
-    /// Utility method for testing `handle_event` without using integration test.
-    /// Especially useful for testing helper components such as `Prompt`, `TreeView` etc
-    fn handle_events(&mut self, events: &str) -> anyhow::Result<()> {
-        use helix_view::input::parse_macro;
-
-        let mut editor = Context::dummy_editor();
-        let mut jobs = Context::dummy_jobs();
-        let mut cx = Context::dummy(&mut jobs, &mut editor);
-        for event in parse_macro(events)? {
-            self.handle_event(&Event::Key(event), &mut cx);
-        }
-        Ok(())
-    }
 }
 
 pub struct Compositor {
@@ -135,6 +80,7 @@ pub struct Compositor {
     area: Rect,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
+    pub(crate) full_redraw: bool,
 }
 
 impl Compositor {
@@ -143,6 +89,7 @@ impl Compositor {
             layers: Vec::new(),
             area,
             last_picker: None,
+            full_redraw: false,
         }
     }
 
@@ -156,6 +103,11 @@ impl Compositor {
 
     /// Add a layer to be rendered in front of all existing layers.
     pub fn push(&mut self, mut layer: Box<dyn Component>) {
+        // immediately clear last_picker field to avoid excessive memory
+        // consumption for picker with many items
+        if layer.id() == Some(picker::ID) {
+            self.last_picker = None;
+        }
         let size = self.size();
         // trigger required_size on init
         layer.required_size((size.width, size.height));
@@ -185,9 +137,12 @@ impl Compositor {
     }
 
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
-        // If it is a key event and a macro is being recorded, push the key event to the recording.
+        // If it is a key event, a macro is being recorded, and a macro isn't being replayed,
+        // push the key event to the recording.
         if let (Event::Key(key), Some((_, keys))) = (event, &mut cx.editor.macro_recording) {
-            keys.push(*key);
+            if cx.editor.macro_replaying.is_empty() {
+                keys.push(*key);
+            }
         }
 
         let mut callbacks = Vec::new();
@@ -255,6 +210,10 @@ impl Compositor {
             .iter_mut()
             .find(|component| component.id() == Some(id))
             .and_then(|component| component.as_any_mut().downcast_mut())
+    }
+
+    pub fn need_full_redraw(&mut self) {
+        self.full_redraw = true;
     }
 }
 

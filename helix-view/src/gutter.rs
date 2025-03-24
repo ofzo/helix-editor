@@ -9,8 +9,7 @@ use crate::{
 };
 
 fn count_digits(n: usize) -> usize {
-    // TODO: use checked_log10 when MSRV reaches 1.67
-    std::iter::successors(Some(n), |&n| (n >= 10).then_some(n / 10)).count()
+    (usize::checked_ilog10(n).unwrap_or(0) + 1) as usize
 }
 
 pub type GutterFn<'doc> = Box<dyn FnMut(usize, bool, bool, &mut String) -> Option<Style> + 'doc>;
@@ -70,9 +69,10 @@ pub fn diagnostic<'doc>(
                 .iter()
                 .take_while(|d| {
                     d.line == line
-                        && doc
-                            .language_servers_with_feature(LanguageServerFeature::Diagnostics)
-                            .any(|ls| ls.id() == d.language_server_id)
+                        && d.provider.language_server_id().map_or(true, |id| {
+                            doc.language_servers_with_feature(LanguageServerFeature::Diagnostics)
+                                .any(|ls| ls.id() == id)
+                        })
                 });
             diagnostics_on_line.max_by_key(|d| d.severity).map(|d| {
                 write!(out, "●").ok();
@@ -94,9 +94,9 @@ pub fn diff<'doc>(
     theme: &Theme,
     _is_focused: bool,
 ) -> GutterFn<'doc> {
-    let added = theme.get("diff.plus");
-    let deleted = theme.get("diff.minus");
-    let modified = theme.get("diff.delta");
+    let added = theme.get("diff.plus.gutter");
+    let deleted = theme.get("diff.minus.gutter");
+    let modified = theme.get("diff.delta.gutter");
     if let Some(diff_handle) = doc.diff_handle() {
         let hunks = diff_handle.load();
         let mut hunk_i = 0;
@@ -179,7 +179,7 @@ pub fn line_numbers<'doc>(
                     && current_line != line;
 
                 let display_num = if relative {
-                    abs_diff(current_line, line)
+                    current_line.abs_diff(line)
                 } else {
                     line + 1
                 };
@@ -225,15 +225,6 @@ pub fn padding<'doc>(
     _is_focused: bool,
 ) -> GutterFn<'doc> {
     Box::new(|_line: usize, _selected: bool, _first_visual_line: bool, _out: &mut String| None)
-}
-
-#[inline(always)]
-const fn abs_diff(a: usize, b: usize) -> usize {
-    if a > b {
-        a - b
-    } else {
-        b - a
-    }
 }
 
 pub fn breakpoints<'doc>(

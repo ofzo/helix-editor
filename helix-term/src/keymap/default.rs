@@ -58,6 +58,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "k" => move_line_up,
             "j" => move_line_down,
             "." => goto_last_modification,
+            "w" => goto_word,
         },
         ":" => command_mode,
 
@@ -86,10 +87,12 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "A-;" => flip_selections,
         "A-o" | "A-up" => expand_selection,
         "A-i" | "A-down" => shrink_selection,
+        "A-I" | "A-S-down" => select_all_children,
         "A-p" | "A-left" => select_prev_sibling,
         "A-n" | "A-right" => select_next_sibling,
         "A-e" => move_parent_node_end,
         "A-b" => move_parent_node_start,
+        "A-a" => select_all_siblings,
 
         "%" => select_all,
         "x" => extend_line_below,
@@ -113,6 +116,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "t" => goto_prev_class,
             "a" => goto_prev_parameter,
             "c" => goto_prev_comment,
+            "e" => goto_prev_entry,
             "T" => goto_prev_test,
             "p" => goto_prev_paragraph,
             "space" => add_newline_above,
@@ -126,6 +130,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "t" => goto_next_class,
             "a" => goto_next_parameter,
             "c" => goto_next_comment,
+            "e" => goto_next_entry,
             "T" => goto_next_test,
             "p" => goto_next_paragraph,
             "space" => add_newline_below,
@@ -135,7 +140,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "?" => rsearch,
         "n" => search_next,
         "N" => search_prev,
-        "*" => search_selection,
+        "*" => search_selection_detect_word_boundaries,
+        "A-*" => search_selection,
 
         "u" => undo,
         "U" => redo,
@@ -178,8 +184,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "esc" => normal_mode,
         "C-b" | "pageup" => page_up,
         "C-f" | "pagedown" => page_down,
-        "C-u" => half_page_up,
-        "C-d" => half_page_down,
+        "C-u" => page_cursor_half_up,
+        "C-d" => page_cursor_half_down,
 
         "C-w" => { "Window"
             "C-w" | "w" => rotate_view,
@@ -216,15 +222,19 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "space" => { "Space"
             "f" => file_picker,
             "F" => file_picker_in_current_directory,
+            "e" => reveal_current_file,
+            // "e" => file_explorer,
+            "E" => file_explorer_in_current_buffer_directory,
             "b" => buffer_picker,
             "j" => jumplist_picker,
             "s" => symbol_picker,
             "S" => workspace_symbol_picker,
             "d" => diagnostics_picker,
             "D" => workspace_diagnostics_picker,
+            "g" => changed_file_picker,
             "a" => code_action,
             "'" => last_picker,
-            "g" => { "Debug (experimental)" sticky=true
+            "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,
                 "r" => dap_restart,
                 "b" => dap_toggle_breakpoint,
@@ -276,8 +286,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "k" => hover,
             "r" => rename_symbol,
             "h" => select_references_to_symbol_under_cursor,
+            "c" => toggle_comments,
+            "C" => toggle_block_comments,
+            "A-c" => toggle_line_comments,
             "?" => command_palette,
-            "e" => reveal_current_file,
         },
         "z" => { "View"
             "z" | "c" => align_view_center,
@@ -288,8 +300,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "j" | "down" => scroll_down,
             "C-b" | "pageup" => page_up,
             "C-f" | "pagedown" => page_down,
-            "C-u" | "backspace" => half_page_up,
-            "C-d" | "space" => half_page_down,
+            "C-u" | "backspace" => page_cursor_half_up,
+            "C-d" | "space" => page_cursor_half_down,
 
             "/" => search,
             "?" => rsearch,
@@ -305,8 +317,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "j" | "down" => scroll_down,
             "C-b" | "pageup" => page_up,
             "C-f" | "pagedown" => page_down,
-            "C-u" | "backspace" => half_page_up,
-            "C-d" | "space" => half_page_down,
+            "C-u" | "backspace" => page_cursor_half_up,
+            "C-d" | "space" => page_cursor_half_down,
 
             "/" => search,
             "?" => rsearch,
@@ -358,6 +370,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "g" => { "Goto"
             "k" => extend_line_up,
             "j" => extend_line_down,
+            "w" => extend_to_word,
         },
     }));
     let insert = keymap!({ "Insert mode"

@@ -53,6 +53,7 @@
 "ui.virtual.whitespace" = "bg2"
 "ui.virtual.ruler" = { bg = "grey2" } 
 "ui.virtual.inlay-hint" = { fg = "grey2", modifiers = ["italic"] }
+"ui.virtual.jump-label" = { fg = "nasty-red", modifiers = ["bold"] }
 
 "hint" = "blue"
 "info" = "aqua"
@@ -63,6 +64,8 @@
 "diagnostic.info" = { underline = { style = "curl", color = "aqua" } }
 "diagnostic.warning" = { underline = { style = "curl", color = "yellow" } }
 "diagnostic.error" = { underline = { style = "curl", color = "nasty-red" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 
 "diff.plus" = { fg = "green" }
 "diff.delta" = { fg = "orange" }

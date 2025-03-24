@@ -6,15 +6,6 @@
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        flake-utils.follows = "flake-utils";
-      };
-    };
-    crane = {
-      url = "github:ipetkov/crane";
-      inputs.rust-overlay.follows = "rust-overlay";
-      inputs.flake-utils.follows = "flake-utils";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -22,171 +13,74 @@
   outputs = {
     self,
     nixpkgs,
-    crane,
     flake-utils,
     rust-overlay,
     ...
-  }:
+  }: let
+    gitRev = self.rev or self.dirtyRev or null;
+  in
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
         inherit system;
         overlays = [(import rust-overlay)];
       };
-      mkRootPath = rel:
-        builtins.path {
-          path = "${toString ./.}/${rel}";
-          name = rel;
-        };
-      filteredSource = let
-        pathsToIgnore = [
-          ".envrc"
-          ".ignore"
-          ".github"
-          ".gitignore"
-          "logo.svg"
-          "logo_dark.svg"
-          "logo_light.svg"
-          "rust-toolchain.toml"
-          "rustfmt.toml"
-          "runtime"
-          "screenshot.png"
-          "book"
-          "contrib"
-          "docs"
-          "README.md"
-          "CHANGELOG.md"
-          "shell.nix"
-          "default.nix"
-          "grammars.nix"
-          "flake.nix"
-          "flake.lock"
-        ];
-        ignorePaths = path: type: let
-          inherit (nixpkgs) lib;
-          # split the nix store path into its components
-          components = lib.splitString "/" path;
-          # drop off the `/nix/hash-source` section from the path
-          relPathComponents = lib.drop 4 components;
-          # reassemble the path components
-          relPath = lib.concatStringsSep "/" relPathComponents;
-        in
-          lib.all (p: ! (lib.hasPrefix p relPath)) pathsToIgnore;
-      in
-        builtins.path {
-          name = "helix-source";
-          path = toString ./.;
-          # filter out unnecessary paths
-          filter = ignorePaths;
-        };
-      makeOverridableHelix = old: config: let
-        grammars = pkgs.callPackage ./grammars.nix config;
-        runtimeDir = pkgs.runCommand "helix-runtime" {} ''
-          mkdir -p $out
-          ln -s ${mkRootPath "runtime"}/* $out
-          rm -r $out/grammars
-          ln -s ${grammars} $out/grammars
-        '';
-        helix-wrapped =
-          pkgs.runCommand
-          old.name
-          {
-            inherit (old) pname version;
-            meta = old.meta or {};
-            passthru =
-              (old.passthru or {})
-              // {
-                unwrapped = old;
-              };
-            nativeBuildInputs = [pkgs.makeWrapper];
-            makeWrapperArgs = config.makeWrapperArgs or [];
-          }
-          ''
-            cp -rs --no-preserve=mode,ownership ${old} $out
-            wrapProgram "$out/bin/hx" ''${makeWrapperArgs[@]} --set HELIX_RUNTIME "${runtimeDir}"
-          '';
-      in
-        helix-wrapped
-        // {
-          override = makeOverridableHelix old;
-          passthru =
-            helix-wrapped.passthru
-            // {
-              wrapper = old: makeOverridableHelix old config;
-            };
-        };
-      stdenv =
-        if pkgs.stdenv.isLinux
-        then pkgs.stdenv
-        else pkgs.clangStdenv;
-      rustFlagsEnv =
-        if stdenv.isLinux
-        then ''$RUSTFLAGS -C link-arg=-fuse-ld=lld -C target-cpu=native -Clink-arg=-Wl,--no-rosegment''
-        else "$RUSTFLAGS";
-      rustToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-      craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-      commonArgs =
-        {
-          inherit stdenv;
-          src = filteredSource;
-          # disable fetching and building of tree-sitter grammars in the helix-term build.rs
-          HELIX_DISABLE_AUTO_GRAMMAR_BUILD = "1";
-          buildInputs = [stdenv.cc.cc.lib];
-          # disable tests
-          doCheck = false;
-          meta.mainProgram = "hx";
-        }
-        // craneLib.crateNameFromCargoToml {cargoToml = ./helix-term/Cargo.toml;};
-      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+      # Get Helix's MSRV toolchain to build with by default.
+      msrvToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      msrvPlatform = pkgs.makeRustPlatform {
+        cargo = msrvToolchain;
+        rustc = msrvToolchain;
+      };
     in {
-      packages = {
-        helix-unwrapped = craneLib.buildPackage (commonArgs
-          // {
-            inherit cargoArtifacts;
-          });
-        helix = makeOverridableHelix self.packages.${system}.helix-unwrapped {};
-        default = self.packages.${system}.helix;
+      packages = rec {
+        helix = pkgs.callPackage ./default.nix {inherit gitRev;};
+
+        /**
+        The default Helix build. Uses the latest stable Rust toolchain, and unstable
+        nixpkgs.
+        
+        The build inputs can be overriden with the following:
+         
+        packages.${system}.default.override { rustPlatform = newPlatform; };
+         
+        Overriding a derivation attribute can be done as well:
+        
+        packages.${system}.default.overrideAttrs { buildType = "debug"; };
+        */ 
+        default = helix;
       };
 
-      checks = {
-        # Build the crate itself
-        inherit (self.packages.${system}) helix;
-
-        clippy = craneLib.cargoClippy (commonArgs
-          // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-          });
-
-        fmt = craneLib.cargoFmt commonArgs;
-
-        doc = craneLib.cargoDoc (commonArgs
-          // {
-            inherit cargoArtifacts;
-          });
-
-        test = craneLib.cargoTest (commonArgs
-          // {
-            inherit cargoArtifacts;
-          });
+      checks.helix = self.outputs.packages.${system}.helix.override {
+        buildType = "debug";
+        rustPlatform = msrvPlatform;
       };
 
-      devShells.default = pkgs.mkShell {
-        inputsFrom = builtins.attrValues self.checks.${system};
-        nativeBuildInputs = with pkgs;
-          [lld_13 cargo-flamegraph rust-analyzer]
-          ++ (lib.optional (stdenv.isx86_64 && stdenv.isLinux) pkgs.cargo-tarpaulin)
-          ++ (lib.optional stdenv.isLinux pkgs.lldb)
-          ++ (lib.optional stdenv.isDarwin pkgs.darwin.apple_sdk.frameworks.CoreFoundation);
-        shellHook = ''
-          export HELIX_RUNTIME="$PWD/runtime"
-          export RUST_BACKTRACE="1"
-          export RUSTFLAGS="${rustFlagsEnv}"
-        '';
-      };
+      # Devshell behavior is preserved.
+      devShells.default = let
+        commonRustFlagsEnv = "-C link-arg=-fuse-ld=lld -C target-cpu=native --cfg tokio_unstable";
+        platformRustFlagsEnv = pkgs.lib.optionalString pkgs.stdenv.isLinux "-Clink-arg=-Wl,--no-rosegment";
+      in
+        pkgs.mkShell
+        {
+          inputsFrom = [self.checks.${system}.helix];
+          nativeBuildInputs = with pkgs;
+            [
+              lld
+              cargo-flamegraph
+              rust-bin.nightly.latest.rust-analyzer
+            ]
+            ++ (lib.optional (stdenv.isx86_64 && stdenv.isLinux) cargo-tarpaulin)
+            ++ (lib.optional stdenv.isLinux lldb)
+            ++ (lib.optional stdenv.isDarwin darwin.apple_sdk.frameworks.CoreFoundation);
+          shellHook = ''
+            export RUST_BACKTRACE="1"
+            export RUSTFLAGS="''${RUSTFLAGS:-""} ${commonRustFlagsEnv} ${platformRustFlagsEnv}"
+          '';
+        };
     })
     // {
       overlays.default = final: prev: {
-        inherit (self.packages.${final.system}) helix;
+        helix = final.callPackage ./default.nix {inherit gitRev;};
       };
     };
 

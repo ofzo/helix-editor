@@ -1,4 +1,5 @@
 use crate::compositor::{Component, Context};
+use arc_swap::ArcSwap;
 use tui::{
     buffer::Buffer as Surface,
     text::{Span, Spans, Text},
@@ -6,7 +7,7 @@ use tui::{
 
 use std::sync::Arc;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use helix_core::{
     syntax::{self, HighlightEvent, InjectionLanguageMarker, Syntax},
@@ -14,6 +15,7 @@ use helix_core::{
 };
 use helix_view::{
     graphics::{Margin, Rect, Style},
+    theme::Modifier,
     Theme,
 };
 
@@ -30,7 +32,7 @@ pub fn highlighted_code_block<'a>(
     text: &str,
     language: &str,
     theme: Option<&Theme>,
-    config_loader: Arc<syntax::Loader>,
+    config_loader: Arc<ArcSwap<syntax::Loader>>,
     additional_highlight_spans: Option<Vec<(usize, std::ops::Range<usize>)>>,
 ) -> Text<'a> {
     let mut spans = Vec::new();
@@ -47,6 +49,7 @@ pub fn highlighted_code_block<'a>(
 
     let ropeslice = RopeSlice::from(text);
     let syntax = config_loader
+        .load()
         .language_configuration_for_injection_string(&InjectionLanguageMarker::Name(
             language.into(),
         ))
@@ -120,7 +123,7 @@ pub fn highlighted_code_block<'a>(
 pub struct Markdown {
     contents: String,
 
-    config_loader: Arc<syntax::Loader>,
+    config_loader: Arc<ArcSwap<syntax::Loader>>,
 }
 
 // TODO: pre-render and self reference via Pin
@@ -129,6 +132,9 @@ pub struct Markdown {
 impl Markdown {
     const TEXT_STYLE: &'static str = "ui.text";
     const BLOCK_STYLE: &'static str = "markup.raw.inline";
+    const RULE_STYLE: &'static str = "punctuation.special";
+    const UNNUMBERED_LIST_STYLE: &'static str = "markup.list.unnumbered";
+    const NUMBERED_LIST_STYLE: &'static str = "markup.list.numbered";
     const HEADING_STYLES: [&'static str; 6] = [
         "markup.heading.1",
         "markup.heading.2",
@@ -139,7 +145,7 @@ impl Markdown {
     ];
     const INDENT: &'static str = "  ";
 
-    pub fn new(contents: String, config_loader: Arc<syntax::Loader>) -> Self {
+    pub fn new(contents: String, config_loader: Arc<ArcSwap<syntax::Loader>>) -> Self {
         Self {
             contents,
             config_loader,
@@ -175,6 +181,9 @@ impl Markdown {
         let get_theme = |key: &str| -> Style { theme.map(|t| t.get(key)).unwrap_or_default() };
         let text_style = get_theme(Self::TEXT_STYLE);
         let code_style = get_theme(Self::BLOCK_STYLE);
+        let numbered_list_style = get_theme(Self::NUMBERED_LIST_STYLE);
+        let unnumbered_list_style = get_theme(Self::UNNUMBERED_LIST_STYLE);
+        let rule_style = get_theme(Self::RULE_STYLE);
         let heading_styles: Vec<Style> = Self::HEADING_STYLES
             .iter()
             .map(|key| get_theme(key))
@@ -183,7 +192,9 @@ impl Markdown {
         // Transform text in `<code>` blocks into `Event::Code`
         let mut in_code = false;
         let parser = parser.filter_map(|event| match event {
-            Event::Html(tag) if *tag == *"<code>" => {
+            Event::Html(tag)
+                if tag.starts_with("<code") && matches!(tag.chars().nth(5), Some(' ' | '>')) =>
+            {
                 in_code = true;
                 None
             }
@@ -206,7 +217,7 @@ impl Markdown {
 
                     list_stack.push(list);
                 }
-                Event::End(Tag::List(_)) => {
+                Event::End(TagEnd::List(_)) => {
                     list_stack.pop();
 
                     // whenever top-level list closes, empty line
@@ -222,10 +233,12 @@ impl Markdown {
                     tags.push(Tag::Item);
 
                     // get the appropriate bullet for the current list
-                    let bullet = list_stack
+                    let (bullet, bullet_style) = list_stack
                         .last()
                         .unwrap_or(&None) // use the '- ' bullet in case the list stack would be empty
-                        .map_or(String::from("- "), |number| format!("{}. ", number));
+                        .map_or((String::from("• "), unnumbered_list_style), |number| {
+                            (format!("{}. ", number), numbered_list_style)
+                        });
 
                     // increment the current list number if there is one
                     if let Some(v) = list_stack.last_mut().unwrap_or(&mut None).as_mut() {
@@ -233,7 +246,7 @@ impl Markdown {
                     }
 
                     let prefix = get_indent(list_stack.len()) + bullet.as_str();
-                    spans.push(Span::from(prefix));
+                    spans.push(Span::styled(prefix, bullet_style));
                 }
                 Event::Start(tag) => {
                     tags.push(tag);
@@ -246,7 +259,10 @@ impl Markdown {
                 Event::End(tag) => {
                     tags.pop();
                     match tag {
-                        Tag::Heading(_, _, _) | Tag::Paragraph | Tag::CodeBlock(_) | Tag::Item => {
+                        TagEnd::Heading(_)
+                        | TagEnd::Paragraph
+                        | TagEnd::CodeBlock
+                        | TagEnd::Item => {
                             push_line(&mut spans, &mut lines);
                         }
                         _ => (),
@@ -254,7 +270,7 @@ impl Markdown {
 
                     // whenever heading, code block or paragraph closes, empty line
                     match tag {
-                        Tag::Heading(_, _, _) | Tag::Paragraph | Tag::CodeBlock(_) => {
+                        TagEnd::Heading(_) | TagEnd::Paragraph | TagEnd::CodeBlock => {
                             lines.push(Spans::default());
                         }
                         _ => (),
@@ -275,17 +291,21 @@ impl Markdown {
                         );
                         lines.extend(tui_text.lines.into_iter());
                     } else {
-                        let style = if let Some(Tag::Heading(level, ..)) = tags.last() {
-                            match level {
+                        let style = match tags.last() {
+                            Some(Tag::Heading { level, .. }) => match level {
                                 HeadingLevel::H1 => heading_styles[0],
                                 HeadingLevel::H2 => heading_styles[1],
                                 HeadingLevel::H3 => heading_styles[2],
                                 HeadingLevel::H4 => heading_styles[3],
                                 HeadingLevel::H5 => heading_styles[4],
                                 HeadingLevel::H6 => heading_styles[5],
+                            },
+                            Some(Tag::Emphasis) => text_style.add_modifier(Modifier::ITALIC),
+                            Some(Tag::Strong) => text_style.add_modifier(Modifier::BOLD),
+                            Some(Tag::Strikethrough) => {
+                                text_style.add_modifier(Modifier::CROSSED_OUT)
                             }
-                        } else {
-                            text_style
+                            _ => text_style,
                         };
                         spans.push(Span::styled(text, style));
                     }
@@ -302,7 +322,7 @@ impl Markdown {
                     }
                 }
                 Event::Rule => {
-                    lines.push(Spans::from(Span::styled("---", code_style)));
+                    lines.push(Spans::from(Span::styled("───", rule_style)));
                     lines.push(Spans::default());
                 }
                 // TaskListMarker(bool) true if checked
@@ -334,12 +354,12 @@ impl Component for Markdown {
 
         let text = self.parse(Some(&cx.editor.theme));
 
-        let par = Paragraph::new(text)
+        let par = Paragraph::new(&text)
             .wrap(Wrap { trim: false })
             .scroll((cx.scroll.unwrap_or_default() as u16, 0));
 
         let margin = Margin::all(1);
-        par.render(area.inner(&margin), surface);
+        par.render(area.inner(margin), surface);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {

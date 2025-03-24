@@ -1,5 +1,17 @@
+; Scopes
+;-------
+
+[
+  (type_alias_declaration)
+  (class_declaration)
+  (interface_declaration)
+] @local.scope
+
 ; Definitions
 ;------------
+
+(type_parameter
+  name: (type_identifier) @local.definition)
 
 ; Javascript and Typescript Treesitter grammars deviate when defining the
 ; tree structure for parameters, so we need to address them in each specific
@@ -11,6 +23,11 @@
   (identifier) @local.definition)
 
 ; (i?: t)
-; (i?: t = 1) // Invalid but still posible to hihglight.
+; (i?: t = 1) // Invalid but still possible to highlight.
 (optional_parameter
   (identifier) @local.definition)
+
+; References
+;-----------
+
+(type_identifier) @local.reference
