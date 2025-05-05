@@ -16,7 +16,7 @@ mod text_decorations;
 
 use crate::compositor::{Compositor, Context};
 use crate::job::{self, Callback};
-use crate::{alt, filter_picker_entry, key};
+use crate::{alt, filter_picker_entry, shift};
 pub use completion::Completion;
 pub use editor::EditorView;
 use helix_core::hashmap;
@@ -734,8 +734,8 @@ pub fn file_explorer(
         alt!('d') => delete,
         alt!('c') => copy,
         alt!('y') => yank_path,
-        key!(Left) => back_to_parent,
-        key!(Right) => forword_to_cursor
+        alt!(',') => back_to_parent,
+        alt!('.') => forword_to_cursor
     })
     .set_title(format!("{}", location));
 

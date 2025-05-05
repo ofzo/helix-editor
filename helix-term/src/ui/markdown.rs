@@ -143,7 +143,7 @@ pub struct Markdown {
 impl Markdown {
     const TEXT_STYLE: &'static str = "ui.text";
     const BLOCK_STYLE: &'static str = "markup.raw.inline";
-    const RULE_STYLE: &'static str = "punctuation.special";
+    // const RULE_STYLE: &'static str = "punctuation.special";
     const UNNUMBERED_LIST_STYLE: &'static str = "markup.list.unnumbered";
     const NUMBERED_LIST_STYLE: &'static str = "markup.list.numbered";
     const HEADING_STYLES: [&'static str; 6] = [
