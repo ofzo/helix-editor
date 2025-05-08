@@ -10,7 +10,7 @@ use helix_view::{
     graphics::{CursorKind, Rect},
     info::Info,
     input::{Event, KeyEvent},
-    theme::Modifier,
+    theme::{Modifier, Style},
     Editor,
 };
 use std::cmp::Ordering;
@@ -174,7 +174,7 @@ impl Explorer {
         Ok(Self {
             tree: Self::new_tree_view(current_root.clone())?,
             history: vec![],
-            show_help: false,
+            show_help: true,
             state: State::new(true, current_root),
             prompt: None,
             on_next_key: None,
@@ -433,17 +433,22 @@ impl Explorer {
             },
         }
         .clip_bottom(1);
+        // .clip_bottom(cx.editor.config().commandline as u16);
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(side_area, background);
 
         let prompt_area = area.clip_top(side_area.height);
 
+        let split_style = cx.editor.theme.get("ui.window");
+
         let list_area = match position {
             ExplorerPosition::Left => {
-                render_block(side_area.clip_left(1), surface, Borders::RIGHT).clip_bottom(0)
+                render_block(side_area.clip_left(1), surface, Borders::RIGHT, split_style)
+                    .clip_bottom(0)
             }
             ExplorerPosition::Right => {
-                render_block(side_area.clip_right(1), surface, Borders::LEFT).clip_bottom(0)
+                render_block(side_area.clip_right(1), surface, Borders::LEFT, split_style)
+                    .clip_bottom(0)
             }
         };
         self.render_tree(list_area, prompt_area, surface, cx);
@@ -743,8 +748,8 @@ impl Component for Explorer {
     }
 }
 
-fn render_block(area: Rect, surface: &mut Surface, borders: Borders) -> Rect {
-    let block = Block::default().borders(borders);
+fn render_block(area: Rect, surface: &mut Surface, borders: Borders, split_style: Style) -> Rect {
+    let block = Block::default().borders(borders).border_style(split_style);
     let inner = block.inner(area);
     block.render(area, surface);
     inner
