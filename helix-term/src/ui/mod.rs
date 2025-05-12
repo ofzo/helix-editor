@@ -16,7 +16,7 @@ mod text_decorations;
 
 use crate::compositor::{Compositor, Context};
 use crate::job::{self, Callback};
-use crate::{alt, filter_picker_entry, shift};
+use crate::{alt, filter_picker_entry};
 pub use completion::Completion;
 pub use editor::EditorView;
 use helix_core::hashmap;
