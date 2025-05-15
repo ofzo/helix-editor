@@ -1798,7 +1798,6 @@ impl Editor {
                 true,
                 self.config.clone(),
                 self.syn_loader.clone(),
-                &self.diff_providers
                 &self.diff_providers,
             )?;
 
