@@ -450,13 +450,13 @@ impl EditorView {
         //     .expect("could not find `ui.selection` scope in the theme!");
 
         let selection_scope = match mode {
-            Mode::Normal => theme.find_scope_index_exact("ui.selection.normal"),
-            Mode::Select => theme.find_scope_index_exact("ui.selection.select"),
-            Mode::Insert => theme.find_scope_index_exact("ui.selection.insert"),
+            Mode::Normal => theme.find_highlight_exact("ui.selection.normal"),
+            Mode::Select => theme.find_highlight_exact("ui.selection.select"),
+            Mode::Insert => theme.find_highlight_exact("ui.selection.insert"),
         }
         .unwrap_or(
             theme
-                .find_scope_index_exact("ui.selection")
+                .find_highlight_exact("ui.selection")
                 .expect("could not find `ui.selection` scope in the theme!"),
         );
 
@@ -465,13 +465,13 @@ impl EditorView {
         //     .unwrap_or(selection_scope);
 
         let primary_selection_scope = match mode {
-            Mode::Normal => theme.find_scope_index_exact("ui.selection.primary.normal"),
-            Mode::Select => theme.find_scope_index_exact("ui.selection.primary.select"),
-            Mode::Insert => theme.find_scope_index_exact("ui.selection.primary.insert"),
+            Mode::Normal => theme.find_highlight_exact("ui.selection.primary.normal"),
+            Mode::Select => theme.find_highlight_exact("ui.selection.primary.select"),
+            Mode::Insert => theme.find_highlight_exact("ui.selection.primary.insert"),
         }
         .unwrap_or(
             theme
-                .find_scope_index_exact("ui.selection.primary")
+                .find_highlight_exact("ui.selection.primary")
                 .expect("could not find `ui.selection.primary` scope in the theme!"),
         );
 

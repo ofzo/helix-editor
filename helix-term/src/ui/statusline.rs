@@ -270,19 +270,21 @@ where
     if warnings > 0 {
         write(
             context,
+            Span::styled(
             icons.diagnostic().warning().to_string(),
-            Some(context.editor.theme.get("warning")),
+        context.editor.theme.get("warning"))
         );
-        write(context, format!(" {} ", warnings), None);
+        write(context, format!(" {} ", warnings).into());
     }
 
     if errors > 0 {
         write(
             context,
+            Span::styled(
             icons.diagnostic().error().to_string(),
-            Some(context.editor.theme.get("error")),
+            context.editor.theme.get("error")),
         );
-        write(context, format!(" {} ", errors), None);
+        write(context, format!(" {} ", errors).into());
     }
 }
 
@@ -356,19 +358,17 @@ where
     if warnings > 0 {
         write(
             context,
-            icons.diagnostic().warning().to_string(),
-            Some(context.editor.theme.get("warning")),
+            Span::styled(icons.diagnostic().warning().to_string(), context.editor.theme.get("warning"))
         );
-        write(context, format!(" {} ", warnings), None);
+        write(context, format!(" {} ", warnings).into());
     }
 
     if errors > 0 {
         write(
             context,
-            icons.diagnostic().error().to_string(),
-            Some(context.editor.theme.get("error")),
+            Span::styled(icons.diagnostic().error().to_string(), context.editor.theme.get("error"))
         );
-        write(context, format!(" {} ", warnings), None);
+        write(context, format!(" {} ", warnings).into());
     }
 }
 
@@ -449,7 +449,7 @@ where
         0..=14 => bar::ONE_EIGHTH,
         _ => bar::FULL,
     };
-    write(context, format!("{}% {}", precentage, bar), None)
+    write(context, format!("{}% {}", precentage, bar).into())
 }
 
 fn render_file_encoding<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -498,7 +498,7 @@ where
         .mime()
         .get(context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME));
 
-    write(context, format!(" {} ", icon), None);
+    write(context, format!(" {} ", icon).into());
 }
 
 fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -530,12 +530,12 @@ where
         format!("{} ", path)
     };
 
-    write(context, title, None);
+    write(context, title.into());
 }
 
-fn render_file_relative_path<F>(context: &mut RenderContext, write: F)
+fn render_file_relative_path<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
-    F: Fn(&mut RenderContext, String, Option<Style>) + Copy,
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     let title = {
         let path = context.doc.path();
@@ -626,11 +626,12 @@ where
     } else {
         format!("{icon} {head}")
     };
+    let styled = context.editor.theme.get("ui.statusline.version_control");
+
 
     write(
         context,
-        vcs,
-        Some(context.editor.theme.get("ui.statusline.version_control")),
+        Span::styled( vcs, styled)
     );
 }
 
