@@ -1,7 +1,10 @@
 use std::cmp::Ordering;
 
 use anyhow::Result;
-use helix_view::theme::Modifier;
+use helix_view::{
+    input::{MouseButton, MouseEvent, MouseEventKind},
+    theme::Modifier,
+};
 
 use crate::{
     compositor::{Component, Context, EventResult},
@@ -480,6 +483,61 @@ impl<T: TreeViewItem> TreeView<T> {
             None
         }
     }
+
+    pub fn handle_mouse_event(
+        &mut self,
+        event: &MouseEvent,
+        cxt: &mut Context,
+        params: &mut T::Params,
+    ) -> EventResult {
+        // let config = cxt.editor.config();
+        let MouseEvent {
+            kind,
+            row,
+            column,
+            // modifiers,
+            ..
+        } = *event;
+
+        // NOTE 左侧
+        if self.max_len < column as usize {
+            return EventResult::Ignored(None);
+        }
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // BUG
+                log::info!("mouse {row} = {}", self.selected);
+
+                let row = row as usize; // + top index
+                if self.selected == row {
+                    self.on_enter(cxt, params, self.selected)
+                        .unwrap_or_default();
+                    self.regenerate_index();
+                } else {
+                    self.set_selected(row);
+                }
+                return EventResult::Consumed(None);
+            }
+            MouseEventKind::ScrollUp => {
+                self.pre_render = Some(Box::new(|tree, area| {
+                    if area.height as usize > tree.winline + 1 {
+                        tree.winline += 2;
+                    }
+                }));
+                return EventResult::Consumed(None);
+            }
+            MouseEventKind::ScrollDown => {
+                self.pre_render = Some(Box::new(|tree, _area| {
+                    if tree.winline > 1 {
+                        tree.winline -= 2;
+                    }
+                }));
+                return EventResult::Consumed(None);
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
 }
 
 pub fn tree_view_help() -> Vec<(&'static str, &'static str)> {
@@ -592,6 +650,7 @@ impl<T: TreeViewItem> TreeView<T> {
     }
 
     fn set_selected(&mut self, selected: usize) {
+        log::info!("tree- select:{}", self.selected);
         let previous_selected = self.selected;
         self.set_selected_without_history(selected);
         if previous_selected.abs_diff(selected) > 1 {
@@ -1051,6 +1110,7 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         let key_event = match event {
             Event::Key(event) => event,
             Event::Resize(..) => return EventResult::Consumed(None),
+            // Event::Mouse(event) => return self.handle_mouse_event(event, cx),
             _ => return EventResult::Ignored(None),
         };
         (|| -> Result<EventResult> {
