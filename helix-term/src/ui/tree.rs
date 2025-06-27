@@ -506,18 +506,21 @@ impl<T: TreeViewItem> TreeView<T> {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // BUG
-                log::info!("mouse {row} = {}", self.selected);
+                let cow = row as isize - self.winline as isize;
+                let selected = if cow > 0 {
+                    self.selected.saturating_add(cow as usize)
+                }else{
+                    self.selected.saturating_sub(cow.unsigned_abs())
+                };
 
-                let row = row as usize; // + top index
-                if self.selected == row {
+                if self.selected == selected {
                     self.on_enter(cxt, params, self.selected)
                         .unwrap_or_default();
                     self.regenerate_index();
                 } else {
-                    self.set_selected(row);
+                    self.set_selected(selected);
                 }
-                return EventResult::Consumed(None);
+                EventResult::Consumed(None)
             }
             MouseEventKind::ScrollUp => {
                 self.pre_render = Some(Box::new(|tree, area| {
@@ -525,7 +528,7 @@ impl<T: TreeViewItem> TreeView<T> {
                         tree.winline += 2;
                     }
                 }));
-                return EventResult::Consumed(None);
+                EventResult::Consumed(None)
             }
             MouseEventKind::ScrollDown => {
                 self.pre_render = Some(Box::new(|tree, _area| {
@@ -533,7 +536,7 @@ impl<T: TreeViewItem> TreeView<T> {
                         tree.winline -= 2;
                     }
                 }));
-                return EventResult::Consumed(None);
+                EventResult::Consumed(None)
             }
             _ => EventResult::Ignored(None),
         }
@@ -650,7 +653,6 @@ impl<T: TreeViewItem> TreeView<T> {
     }
 
     fn set_selected(&mut self, selected: usize) {
-        log::info!("tree- select:{}", self.selected);
         let previous_selected = self.selected;
         self.set_selected_without_history(selected);
         if previous_selected.abs_diff(selected) > 1 {
