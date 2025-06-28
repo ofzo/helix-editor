@@ -8,7 +8,8 @@ use helix_view::{
 
 use crate::{
     compositor::{Component, Context, EventResult},
-    ctrl, key, shift, ui,
+    ctrl, key, shift,
+    ui::{self, Prompt},
 };
 use helix_core::movement::Direction;
 use helix_view::{
@@ -19,8 +20,6 @@ use tui::{
     buffer::Buffer as Surface,
     text::{Span, Spans},
 };
-
-use super::Prompt;
 
 pub trait TreeViewItem: Sized + Ord {
     type Params: Default;
@@ -295,8 +294,7 @@ pub struct TreeView<T: TreeViewItem> {
     /// For implementing horizontal scoll
     max_len: usize,
     count: usize,
-    tree_symbol_style: String,
-
+    // tree_symbol_style: String,
     #[allow(clippy::type_complexity)]
     pre_render: Option<Box<dyn Fn(&mut Self, Rect) + 'static>>,
 
@@ -324,7 +322,7 @@ impl<T: TreeViewItem> TreeView<T> {
             column: 0,
             max_len: 0,
             count: 0,
-            tree_symbol_style: "ui.text".into(),
+            // tree_symbol_style: "ui.text".into(),
             pre_render: None,
             on_opened_fn: None,
             on_folded_fn: None,
@@ -342,6 +340,7 @@ impl<T: TreeViewItem> TreeView<T> {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_folded_fn<F>(mut self, f: F) -> Self
     where
         F: FnMut(&mut T, &mut Context, &mut T::Params) + 'static,
@@ -350,10 +349,10 @@ impl<T: TreeViewItem> TreeView<T> {
         self
     }
 
-    pub fn tree_symbol_style(mut self, style: String) -> Self {
-        self.tree_symbol_style = style;
-        self
-    }
+    // pub fn tree_symbol_style(mut self, style: String) -> Self {
+    //     self.tree_symbol_style = style;
+    //     self
+    // }
 
     /// Reveal item in the tree based on the given `segments`.
     ///
@@ -493,23 +492,17 @@ impl<T: TreeViewItem> TreeView<T> {
         cxt: &mut Context,
         params: &mut T::Params,
     ) -> EventResult {
-        // let config = cxt.editor.config();
         let MouseEvent {
             kind,
             row,
-            column,
+            // column,
             // modifiers,
             ..
         } = *event;
 
-        // NOTE 左侧
-        if self.max_len < column as usize {
-            return EventResult::Ignored(None);
-        }
-
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                log::info!("mouse-{} {} {}", row, self.winline, self.selected);
+                // log::debug!("mouse-{} {} {}", row, self.winline, self.selected);
                 let cow = row as isize - self.winline as isize;
                 let selected = if cow > 0 {
                     self.selected.saturating_add(cow as usize)
@@ -830,9 +823,9 @@ impl<T: TreeViewItem> TreeView<T> {
         Ok(&self.current()?.item)
     }
 
-    pub fn winline(&self) -> usize {
-        self.winline
-    }
+    // pub fn winline(&self) -> usize {
+    //     self.winline
+    // }
 }
 
 #[derive(Clone)]
@@ -1062,7 +1055,7 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
             .collect()
     }
 
-    pub fn handle_event(
+    pub fn handle_key_event(
         &mut self,
         event: &Event,
         cx: &mut Context,
