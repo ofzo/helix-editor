@@ -1,10 +1,7 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, path::PathBuf};
 
 use anyhow::Result;
-use helix_view::{
-    input::{MouseButton, MouseEvent, MouseEventKind},
-    theme::Modifier,
-};
+use helix_view::input::{MouseButton, MouseEvent, MouseEventKind};
 
 use crate::{
     compositor::{Component, Context, EventResult},
@@ -25,6 +22,7 @@ pub trait TreeViewItem: Sized + Ord {
     type Params: Default;
 
     fn name(&self) -> String;
+    fn path(&self) -> PathBuf;
     fn is_parent(&self) -> bool;
 
     fn filter(&self, s: &str) -> bool {
@@ -364,7 +362,7 @@ impl<T: TreeViewItem> TreeView<T> {
     ///
     pub fn reveal_item(&mut self, segments: Vec<String>) -> Result<()> {
         // Expand the tree
-        let root = self.tree.item.name();
+        let root = self.tree.item.path().display().to_string();
         segments.iter().try_fold(
             &mut self.tree,
             |current_tree, segment| {
@@ -856,21 +854,13 @@ fn render_tree<'a, T: TreeViewItem>(
     let is_ancestor_of_current_item = !is_selected && tree.get(selected).is_some();
 
     let style = if is_selected {
-        cx.editor
-            .theme
-            .get("ui.text.focus")
-            .add_modifier(Modifier::REVERSED)
+        cx.editor.theme.get("ui.menu.selected")
     } else {
         cx.editor.theme.get("ui.text")
     };
 
     let ancestor_style = if is_ancestor_of_current_item {
-        let style = cx.editor.theme.get("ui.text.directory");
-        let fg = cx.editor.theme.get("ui.text").fg;
-        match (style.fg, fg) {
-            (None, Some(fg)) => style.fg(fg),
-            _ => style,
-        }
+        cx.editor.theme.get("ui.text.directory")
     } else {
         style
     };
@@ -881,12 +871,24 @@ fn render_tree<'a, T: TreeViewItem>(
         let indicator = if tree.item().is_parent() {
             // TODO: ICON V2
             if tree.is_opened {
-                Span::styled("⏷", style)
+                Span::styled("⏷ ", style)
             } else {
-                Span::styled("⏵", style)
+                Span::styled("⏵ ", style)
             }
         } else {
-            Span::styled(" ", style)
+            Span::styled("  ", style)
+
+            // TODO ICON V2
+            // let icons = ICONS.load();
+            // if let Some(icon) = icons.mime().get(Some(&tree.item.path()), None) {
+            //     if let Some(color) = icon.color() {
+            //         Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
+            //     } else {
+            //         Span::raw(format!("{} ", icon.glyph()))
+            //     }
+            // } else {
+            //     Span::styled("  ", style)
+            // }
         };
 
         indent.0.push(indicator);
@@ -926,25 +928,34 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         surface: &mut Surface,
         cx: &mut Context,
     ) {
-        // let style = cx.editor.theme.get(&self.tree_symbol_style);
         if let Some((_, prompt)) = self.search_prompt.as_mut() {
             prompt.render_prompt(prompt_area, surface, cx)
         }
 
-        let iter = self.render_lines(area, cx).into_iter().enumerate();
+        self.render_lines(area, cx)
+            .into_iter()
+            .enumerate()
+            .for_each(|(index, line)| {
+                let area = Rect {
+                    y: area.y.saturating_add(index as u16),
+                    height: 1,
+                    ..area
+                };
 
-        for (index, line) in iter {
-            let area = Rect::new(area.x, area.y.saturating_add(index as u16), area.width, 1);
-            let indent_len = line.indent.width() as u16;
-            surface.set_spans(area.x, area.y, &line.indent, indent_len);
-            let x = area.x.saturating_add(indent_len);
-            surface.set_span(
-                x,
-                area.y,
-                &line.content,
-                area.width.saturating_sub(indent_len).saturating_sub(1),
-            );
-        }
+                if line.selected {
+                    surface.clear_with(area, line.content.style);
+                }
+
+                let indent_len = line.indent.width() as u16;
+                surface.set_spans(area.x, area.y, &line.indent, indent_len);
+                let x = area.x.saturating_add(indent_len);
+                surface.set_span(
+                    x,
+                    area.y,
+                    &line.content,
+                    area.width.saturating_sub(indent_len).saturating_sub(1),
+                );
+            });
     }
 
     fn render_lines(&mut self, area: Rect, cx: &mut Context) -> Vec<RenderedLine> {
