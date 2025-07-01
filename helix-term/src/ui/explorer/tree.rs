@@ -968,7 +968,7 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
 
         let params = RenderTreeParams {
             tree: &self.tree,
-            prefix: Spans::default(),
+            prefix: Span::raw(" ").into(),
             level: 0,
             selected: self.selected,
         };
