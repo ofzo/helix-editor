@@ -438,7 +438,7 @@ impl Explorer {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(side_area, background);
 
-        let prompt_area = area.clip_top(area.height-1);
+        let prompt_area = area.clip_top(area.height - 1);
 
         let split_style = cx.editor.theme.get("ui.window");
         let border = match position {
@@ -446,7 +446,8 @@ impl Explorer {
             ExplorerPosition::Right => Borders::LEFT,
         };
 
-        let list_area = render_block(side_area, surface, border, split_style).clip_bottom(statusline);
+        let list_area =
+            render_block(side_area, surface, border, split_style).clip_bottom(statusline);
 
         let status_area = match position {
             ExplorerPosition::Left => side_area.clip_right(1),
@@ -686,10 +687,13 @@ impl Component for Explorer {
             Event::Key(event) => event,
             Event::Mouse(event) => {
                 let config = &cx.editor.config().explorer;
-                let is_in_area = match config.position {
-                    ExplorerPosition::Left => event.column < self.state.area.width,
-                    ExplorerPosition::Right => event.column > self.state.area.x,
-                };
+                let is_in_area = event.column > self.state.area.x
+                    && match config.position {
+                        ExplorerPosition::Left => event.column < self.state.area.width,
+                        ExplorerPosition::Right => {
+                            event.column < self.state.area.width + self.state.area.x
+                        }
+                    };
                 if self.is_opened() && is_in_area {
                     self.focus();
                     return self.tree.handle_mouse_event(event, cx, &mut self.state);
