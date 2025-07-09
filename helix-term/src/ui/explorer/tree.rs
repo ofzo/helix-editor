@@ -869,7 +869,6 @@ fn render_tree<'a, T: TreeViewItem>(
     let mut prefix = prefix.clone();
     if level > 0 {
         let indicator = if tree.item().is_parent() {
-            // TODO: ICON V2
             if tree.is_opened {
                 Span::styled("⏷ ", style)
             } else {
@@ -877,23 +876,37 @@ fn render_tree<'a, T: TreeViewItem>(
             }
         } else {
             Span::styled("  ", style)
-
-            // TODO ICON V2
-            // let icons = ICONS.load();
-            // if let Some(icon) = icons.mime().get(Some(&tree.item.path()), None) {
-            //     if let Some(color) = icon.color() {
-            //         Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
-            //     } else {
-            //         Span::raw(format!("{} ", icon.glyph()))
-            //     }
-            // } else {
-            //     Span::styled("  ", style)
-            // }
         };
 
-        indent.0.push(indicator);
+        // TODO: ICON V2
+        // let indicator = if tree.item().is_parent() {
+        //     if tree.is_opened {
+        //         Span::styled(" ", style)
+        //     } else {
+        //         Span::styled(" ", style)
+        //     }
+        // } else {
+        //     let icons = ICONS.load();
+        //     if let Some(icon) = icons.mime().get(Some(&tree.item.path()), None) {
+        //         let icon_color = if is_selected { None } else { icon.color() };
+        //         if let Some(color) = icon_color {
+        //             Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
+        //         } else {
+        //             Span::raw(format!("{} ", icon.glyph()))
+        //         }
+        //     } else {
+        //         Span::styled("  ", style)
+        //     }
+        // };
 
-        prefix.0.push(Span::styled(" ", style));
+        let editor_config = cx.editor.config.load();
+
+        indent.0.push(indicator);
+        prefix.0.push(Span::styled(
+            editor_config.indent_guides.character.to_string(),
+            cx.editor.theme.get("ui.virtual.indent-guide"),
+        ));
+        prefix.0.push(Span::raw(" "));
     }
 
     let name = Span::styled(tree.item.name(), ancestor_style);
