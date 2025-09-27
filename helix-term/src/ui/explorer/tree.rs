@@ -1,7 +1,11 @@
 use std::{cmp::Ordering, path::PathBuf};
 
 use anyhow::Result;
-use helix_view::input::{MouseButton, MouseEvent, MouseEventKind};
+use helix_view::{
+    icons::ICONS,
+    input::{MouseButton, MouseEvent, MouseEventKind},
+    theme::Style,
+};
 
 use crate::{
     compositor::{Component, Context, EventResult},
@@ -870,9 +874,9 @@ fn render_tree<'a, T: TreeViewItem>(
     if level > 0 {
         let indicator = if tree.item().is_parent() {
             if tree.is_opened {
-                Span::styled("⏷ ", style)
+                Span::styled(" ", style)
             } else {
-                Span::styled("⏵ ", style)
+                Span::styled(" ", style)
             }
         } else {
             Span::styled("  ", style)
@@ -881,13 +885,13 @@ fn render_tree<'a, T: TreeViewItem>(
         // TODO: ICON V2
         // let indicator = if tree.item().is_parent() {
         //     if tree.is_opened {
-        //         Span::styled(" ", style)
+        //        Span::styled(" ", style)
         //     } else {
-        //         Span::styled(" ", style)
+        //        Span::styled(" ", style)
         //     }
         // } else {
         //     let icons = ICONS.load();
-        //     if let Some(icon) = icons.mime().get(Some(&tree.item.path()), None) {
+        //     if let Some(icon) = icons.fs().mime().get(Some(&tree.item.path()), None) {
         //         let icon_color = if is_selected { None } else { icon.color() };
         //         if let Some(color) = icon_color {
         //             Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
