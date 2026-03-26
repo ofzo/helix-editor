@@ -20,6 +20,19 @@ mod status;
 
 pub use status::FileChange;
 
+/// Check if a path is ignored by gitignore rules
+/// Returns true if the path is ignored, false otherwise
+/// If git is not available or the path is not in a git repository,
+/// returns false (not ignored)
+pub fn is_ignored(path: &Path) -> bool {
+    #[cfg(feature = "git")]
+    {
+        return git::is_ignored(path);
+    }
+    #[cfg(not(feature = "git"))]
+    return false;
+}
+
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
 #[derive(Clone)]

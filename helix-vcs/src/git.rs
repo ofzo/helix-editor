@@ -229,3 +229,46 @@ fn find_file_in_commit(repo: &Repository, commit: &Commit, file: &Path) -> Resul
         EntryKind::Blob | EntryKind::BlobExecutable => Ok(tree_entry.object_id()),
     }
 }
+
+/// Check if a path is ignored by gitignore rules
+/// Returns true if the path is ignored, false otherwise
+pub fn is_ignored(path: &Path) -> bool {
+    // Try to discover the repository
+    let Ok(repo) = open_repo(path) else {
+        return false;
+    };
+
+    let repo = repo.to_thread_local();
+    let work_dir = match repo.workdir() {
+        Some(dir) => dir,
+        None => return false,
+    };
+
+    // Get the path relative to the work directory
+    let Ok(rel_path) = path.strip_prefix(work_dir) else {
+        return false;
+    };
+
+    // Use gix's status module to check if path is excluded
+    // This handles all gitignore rules including nested .gitignore files
+    match repo.status(gix::progress::Discard) {
+        Ok(status) => {
+            // Create an exclude list and check if our path matches
+            let excludes = match status.excludes(None, |_, _| true) {
+                Ok(excludes) => excludes,
+                Err(_) => return false,
+            };
+
+            let Ok(rela_path) = gix::path::try_into_bstr(rel_path) else {
+                return false;
+            };
+
+            // Check if path is excluded (ignored)
+            match excludes.at_path(rela_path.as_ref(), None) {
+                Some((_, is_excluded)) => is_excluded,
+                None => false,
+            }
+        }
+        Err(_) => false,
+    }
+}
