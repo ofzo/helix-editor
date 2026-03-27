@@ -249,26 +249,15 @@ pub fn is_ignored(path: &Path) -> bool {
         return false;
     };
 
-    // Use gix's status module to check if path is excluded
-    // This handles all gitignore rules including nested .gitignore files
-    match repo.status(gix::progress::Discard) {
-        Ok(status) => {
-            // Create an exclude list and check if our path matches
-            let excludes = match status.excludes(None, |_, _| true) {
-                Ok(excludes) => excludes,
-                Err(_) => return false,
-            };
-
-            let Ok(rela_path) = gix::path::try_into_bstr(rel_path) else {
-                return false;
-            };
-
-            // Check if path is excluded (ignored)
-            match excludes.at_path(rela_path.as_ref(), None) {
-                Some((_, is_excluded)) => is_excluded,
-                None => false,
-            }
-        }
+    // Use git command to check if path is ignored
+    // This is the most reliable way across different gix versions
+    match std::process::Command::new("git")
+        .args(&["check-ignore", "-q"])
+        .arg(path)
+        .current_dir(work_dir)
+        .output()
+    {
+        Ok(output) => output.status.success(),
         Err(_) => false,
     }
 }

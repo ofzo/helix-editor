@@ -23,7 +23,7 @@ use tui::{
 };
 
 pub trait TreeViewItem: Sized + Ord {
-    type Params: Default;
+    type Params: Default + Clone;
 
     fn name(&self) -> String;
     fn path(&self) -> PathBuf;
@@ -33,7 +33,7 @@ pub trait TreeViewItem: Sized + Ord {
         self.name().to_lowercase().contains(&s.to_lowercase())
     }
 
-    fn get_children(&self) -> Result<Vec<Self>>;
+    fn get_children(&self, _params: &Self::Params) -> Result<Vec<Self>>;
 }
 
 fn tree_item_cmp<T: TreeViewItem>(item1: &T, item2: &T) -> Ordering {
@@ -127,9 +127,9 @@ impl<'a, T> DoubleEndedIterator for TreeIter<'a, T> {
 impl<'a, T> ExactSizeIterator for TreeIter<'a, T> {}
 
 impl<T: TreeViewItem> Tree<T> {
-    fn open(&mut self) -> Result<()> {
+    fn open(&mut self, params: &T::Params) -> Result<()> {
         if self.item.is_parent() {
-            self.children = self.get_children()?;
+            self.children = self.get_children(params)?;
             self.is_opened = true;
         }
         Ok(())
@@ -140,11 +140,11 @@ impl<T: TreeViewItem> Tree<T> {
         self.children = vec![];
     }
 
-    fn refresh(&mut self) -> Result<()> {
+    fn refresh(&mut self, params: &T::Params) -> Result<()> {
         if !self.is_opened {
             return Ok(());
         }
-        let latest_children = self.get_children()?;
+        let latest_children = self.get_children(params)?;
         let filtered = std::mem::take(&mut self.children)
             .into_iter()
             // Remove children that does not exists in latest_children
@@ -154,7 +154,7 @@ impl<T: TreeViewItem> Tree<T> {
                     .any(|child| tree.item.name().eq(&child.item.name()))
             })
             .map(|mut tree| {
-                tree.refresh()?;
+                tree.refresh(params)?;
                 Ok(tree)
             })
             .collect::<Result<Vec<_>>>()?;
@@ -178,8 +178,8 @@ impl<T: TreeViewItem> Tree<T> {
         Ok(())
     }
 
-    fn get_children(&self) -> Result<Vec<Tree<T>>> {
-        Ok(vec_to_tree(self.item.get_children()?))
+    fn get_children(&self, params: &T::Params) -> Result<Vec<Tree<T>>> {
+        Ok(vec_to_tree(self.item.get_children(params)?))
     }
 
     fn sort(&mut self) {
@@ -308,11 +308,15 @@ pub struct TreeView<T: TreeViewItem> {
 
     #[allow(clippy::type_complexity)]
     on_next_key: Option<Box<dyn FnMut(&mut Context, &mut Self, &KeyEvent) -> Result<()>>>,
+
+    /// Parameters passed to TreeViewItem::get_children
+    params: T::Params,
 }
 
 impl<T: TreeViewItem> TreeView<T> {
     pub fn build_tree(root: T) -> Result<Self> {
-        let children = root.get_children()?;
+        let params = T::Params::default();
+        let children = root.get_children(&params)?;
         let items = vec_to_tree(children);
         Ok(Self {
             tree: Tree::new(root, items),
@@ -331,7 +335,18 @@ impl<T: TreeViewItem> TreeView<T> {
             on_next_key: None,
             search_prompt: None,
             search_str: "".into(),
+            params,
         })
+    }
+
+    pub fn set_params(&mut self, params: T::Params) {
+        self.params = params;
+    }
+
+    pub fn refresh(&mut self) -> Result<()> {
+        self.tree.refresh(&self.params)?;
+        self.set_selected(self.selected);
+        Ok(())
     }
 
     pub fn with_enter_fn<F>(mut self, f: F) -> Self
@@ -367,6 +382,7 @@ impl<T: TreeViewItem> TreeView<T> {
     pub fn reveal_item(&mut self, segments: Vec<String>) -> Result<()> {
         // Expand the tree
         let root = self.tree.item.path().display().to_string();
+        let params = &self.params;
         segments.iter().try_fold(
             &mut self.tree,
             |current_tree, segment| {
@@ -377,7 +393,7 @@ impl<T: TreeViewItem> TreeView<T> {
                     {
                         Some(tree) => {
                             if !tree.is_opened {
-                                tree.open()?;
+                                tree.open(params)?;
                             }
                             Ok(tree)
                         }
@@ -434,24 +450,19 @@ impl<T: TreeViewItem> TreeView<T> {
     }
 
     fn move_to_children(&mut self) -> Result<()> {
+        let params = self.params.clone();
         let current = self.current_mut()?;
         if current.is_opened {
             self.set_selected(self.selected + 1);
             Ok(())
         } else {
-            current.open()?;
+            current.open(&params)?;
             if !current.children.is_empty() {
                 self.set_selected(self.selected + 1);
                 self.regenerate_index();
             }
             Ok(())
         }
-    }
-
-    pub fn refresh(&mut self) -> Result<()> {
-        self.tree.refresh()?;
-        self.set_selected(self.selected);
-        Ok(())
     }
 
     fn move_to_first_line(&mut self) {
@@ -595,11 +606,12 @@ impl<T: TreeViewItem> TreeView<T> {
         }
 
         if let Some(mut on_open_fn) = self.on_opened_fn.take() {
+            let params_copy = self.params.clone();
             let mut f = || -> Result<()> {
                 let current = self.current_mut()?;
-                match on_open_fn(&mut current.item, cx, params) {
+                match on_open_fn(&mut current.item, cx, &mut params_copy.clone()) {
                     TreeOp::GetChildsAndInsert => {
-                        if let Err(err) = current.open() {
+                        if let Err(err) = current.open(&params_copy) {
                             cx.editor.set_error(format!("{err}"))
                         }
                     }

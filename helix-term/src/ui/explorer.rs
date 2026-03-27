@@ -13,6 +13,7 @@ use helix_view::{
     theme::Style,
     Editor,
 };
+use helix_vcs::is_ignored;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::{borrow::Cow, fs::DirEntry};
@@ -92,14 +93,14 @@ impl Ord for FileInfo {
 impl TreeViewItem for FileInfo {
     type Params = State;
 
-    fn get_children(&self) -> Result<Vec<Self>> {
+    fn get_children(&self, state: &State) -> Result<Vec<Self>> {
         match self.file_type {
             FileType::Root | FileType::Folder => {}
             _ => return Ok(vec![]),
         };
         let ret: Vec<_> = std::fs::read_dir(&self.path)?
             .filter_map(|entry| entry.ok())
-            .filter_map(|entry| dir_entry_to_file_info(entry, &self.path))
+            .filter_map(|entry| dir_entry_to_file_info(entry, &self.path, state))
             .collect();
         Ok(ret)
     }
@@ -117,16 +118,25 @@ impl TreeViewItem for FileInfo {
     }
 }
 
-fn dir_entry_to_file_info(entry: DirEntry, path: &Path) -> Option<FileInfo> {
-    entry.metadata().ok().map(|meta| {
-        let file_type = match meta.is_dir() {
-            true => FileType::Folder,
-            false => FileType::File,
-        };
-        FileInfo {
-            file_type,
-            path: path.join(entry.file_name()),
+fn dir_entry_to_file_info(entry: DirEntry, path: &Path, state: &State) -> Option<FileInfo> {
+    let meta = entry.metadata().ok()?;
+    let file_type = match meta.is_dir() {
+        true => FileType::Folder,
+        false => FileType::File,
+    };
+
+    let full_path = path.join(entry.file_name());
+
+    // 如果 show_ignored 为 false，检查文件是否被 gitignore
+    if !state.show_ignored {
+        if is_ignored(&full_path) {
+            return None;
         }
+    }
+
+    Some(FileInfo {
+        file_type,
+        path: full_path,
     })
 }
 
@@ -145,6 +155,7 @@ struct State {
     current_root: PathBuf,
     area_width: u16,
     area: Rect,
+    show_ignored: bool,
 }
 
 impl State {
@@ -155,6 +166,7 @@ impl State {
             open: true,
             area_width: 0,
             area: Rect::default(),
+            show_ignored: false,  // 默认隐藏被忽略的文件
         }
     }
 }
@@ -173,6 +185,7 @@ pub struct Explorer {
     #[allow(clippy::type_complexity)]
     on_next_key: Option<Box<dyn FnMut(&mut Context, &mut Self, &KeyEvent) -> EventResult>>,
     column_width: u16,
+    show_ignored: bool,  // 控制是否显示被忽略的文件
 }
 
 impl Explorer {
@@ -188,6 +201,7 @@ impl Explorer {
             prompt: None,
             on_next_key: None,
             column_width: cx.editor.config().explorer.column_width as u16,
+            show_ignored: false,  // 默认隐藏被忽略的文件
         })
     }
 
@@ -481,18 +495,28 @@ impl Explorer {
 
         surface.clear_with(area, style);
 
+        let status_text = if self.is_focus() {
+            if self.tree.prompt().is_none() {
+                if self.show_ignored {
+                    " EXPLORER [all]: Press ? for help"
+                } else {
+                    " EXPLORER: Press ? for help"
+                }
+            } else {
+                "Search:"
+            }
+        } else {
+            if self.show_ignored {
+                " EXPLORER [all]"
+            } else {
+                " EXPLORER"
+            }
+        };
+
         surface.set_stringn(
             area.x,
             area.y,
-            if self.is_focus() {
-                if self.tree.prompt().is_none() {
-                    " EXPLORER: Press ? for help"
-                } else {
-                    "Search:"
-                }
-            } else {
-                " EXPLORER"
-            },
+            status_text,
             area.width.into(),
             style,
         );
@@ -511,6 +535,7 @@ impl Explorer {
                 ("[", "Go to previous root"),
                 ("+, =", "Increase size"),
                 ("-, _", "Decrease size"),
+                (".", "Toggle ignored files"),
                 ("q", "Close"),
             ]
             .into_iter()
@@ -590,6 +615,17 @@ impl Explorer {
 
     fn toggle_help(&mut self) {
         self.show_help = !self.show_help
+    }
+
+    fn toggle_show_ignored(&mut self) {
+        self.show_ignored = !self.show_ignored;
+        self.state.show_ignored = self.show_ignored;
+        // 更新 TreeView 的 params
+        self.tree.set_params(self.state.clone());
+        // 刷新树以应用新的过滤设置
+        if let Err(err) = self.tree.refresh() {
+            log::warn!("Failed to refresh tree: {}", err);
+        }
     }
 
     fn go_to_previous_root(&mut self) {
@@ -731,6 +767,7 @@ impl Component for Explorer {
                 key!('r') => self.new_rename_prompt(cx)?,
                 key!('-') | key!('_') => self.decrease_size(),
                 key!('+') | key!('=') => self.increase_size(),
+                key!('.') => self.toggle_show_ignored(),
                 _ => {
                     self.tree
                         .handle_key_event(&Event::Key(*key_event), cx, &mut self.state);
