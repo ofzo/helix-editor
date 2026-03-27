@@ -787,6 +787,12 @@ impl Component for Explorer {
                         .handle_key_event(&Event::Key(*key_event), cx, &mut self.state);
                 }
             };
+
+            // 如果打开文件后焦点丢失，同步关闭帮助面板
+            if !self.state.focus {
+                self.show_help = false;
+            }
+
             Ok(())
         })()
         .unwrap_or_else(|err| cx.editor.set_error(format!("{err}")));

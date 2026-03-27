@@ -611,12 +611,11 @@ impl<T: TreeViewItem> TreeView<T> {
         }
 
         if let Some(mut on_open_fn) = self.on_opened_fn.take() {
-            let params_copy = self.params.clone();
             let mut f = || -> Result<()> {
                 let current = self.current_mut()?;
-                match on_open_fn(&mut current.item, cx, &mut params_copy.clone()) {
+                match on_open_fn(&mut current.item, cx, params) {
                     TreeOp::GetChildsAndInsert => {
-                        if let Err(err) = current.open(&params_copy) {
+                        if let Err(err) = current.open(params) {
                             cx.editor.set_error(format!("{err}"))
                         }
                     }
