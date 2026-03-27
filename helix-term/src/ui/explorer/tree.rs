@@ -34,6 +34,11 @@ pub trait TreeViewItem: Sized + Ord {
     }
 
     fn get_children(&self, _params: &Self::Params) -> Result<Vec<Self>>;
+
+    /// 返回是否需要使用暗淡样式显示（如被 gitignore 的文件）
+    fn dimmed(&self) -> bool {
+        false
+    }
 }
 
 fn tree_item_cmp<T: TreeViewItem>(item1: &T, item2: &T) -> Ordering {
@@ -883,15 +888,25 @@ fn render_tree<'a, T: TreeViewItem>(
 
     let mut indent = prefix.clone();
     let mut prefix = prefix.clone();
+
+    // 如果被忽略且未被选中，使用暗淡样式
+    let dimmed = tree.item.dimmed() && !is_selected;
+
     if level > 0 {
+        let indicator_style = if dimmed {
+            style.add_modifier(helix_view::graphics::Modifier::DIM)
+        } else {
+            style
+        };
+
         let indicator = if tree.item().is_parent() {
             if tree.is_opened {
-                Span::styled(" ", style)
+                Span::styled(" ", indicator_style)
             } else {
-                Span::styled(" ", style)
+                Span::styled(" ", indicator_style)
             }
         } else {
-            Span::styled("  ", style)
+            Span::styled("  ", indicator_style)
         };
 
         // TODO: ICON V2
@@ -925,7 +940,14 @@ fn render_tree<'a, T: TreeViewItem>(
         prefix.0.push(Span::raw(" "));
     }
 
-    let name = Span::styled(tree.item.name(), ancestor_style);
+    // 如果被忽略且未被选中，使用暗淡样式
+    let final_style = if tree.item.dimmed() && !is_selected {
+        ancestor_style.add_modifier(helix_view::graphics::Modifier::DIM)
+    } else {
+        ancestor_style
+    };
+
+    let name = Span::styled(tree.item.name(), final_style);
     let head = RenderedLine {
         indent,
         selected: is_selected,
