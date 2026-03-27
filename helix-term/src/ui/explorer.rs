@@ -36,6 +36,7 @@ enum FileType {
 struct FileInfo {
     file_type: FileType,
     path: PathBuf,
+    is_ignored: bool,  // 标记文件是否被 gitignore
 }
 
 impl FileInfo {
@@ -43,6 +44,7 @@ impl FileInfo {
         Self {
             file_type: FileType::Root,
             path,
+            is_ignored: false,
         }
     }
 
@@ -116,6 +118,10 @@ impl TreeViewItem for FileInfo {
     fn is_parent(&self) -> bool {
         matches!(self.file_type, FileType::Folder | FileType::Root)
     }
+
+    fn dimmed(&self) -> bool {
+        self.is_ignored
+    }
 }
 
 fn dir_entry_to_file_info(entry: DirEntry, path: &Path, state: &State) -> Option<FileInfo> {
@@ -126,17 +132,25 @@ fn dir_entry_to_file_info(entry: DirEntry, path: &Path, state: &State) -> Option
     };
 
     let full_path = path.join(entry.file_name());
+    let file_name = entry.file_name();
 
-    // 如果 show_ignored 为 false，检查文件是否被 gitignore
-    if !state.show_ignored {
-        if is_ignored(&full_path) {
-            return None;
-        }
+    // 始终隐藏 .git 目录
+    if file_name == ".git" {
+        return None;
+    }
+
+    // 检测文件是否被 gitignore
+    let entry_is_ignored = is_ignored(&full_path);
+
+    // 如果 show_ignored 为 false，过滤掉被忽略的文件
+    if !state.show_ignored && entry_is_ignored {
+        return None;
     }
 
     Some(FileInfo {
         file_type,
         path: full_path,
+        is_ignored: entry_is_ignored,
     })
 }
 
