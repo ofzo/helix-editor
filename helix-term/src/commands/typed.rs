@@ -2474,6 +2474,107 @@ fn reset_diff_change(
     Ok(())
 }
 
+fn preview_diff_change(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let editor = &mut cx.editor;
+
+    let (view, doc) = current!(editor);
+    let Some(handle) = doc.diff_handle() else {
+        bail!("Diff is not available in the current buffer")
+    };
+
+    let diff = handle.load();
+    let doc_text = doc.text().slice(..);
+    let diff_base = diff.diff_base();
+
+    let mut hunks: Vec<_> = diff
+        .hunks_intersecting_line_ranges(doc.selection(view.id).line_ranges(doc_text))
+        .collect();
+
+    if hunks.is_empty() {
+        bail!("There are no changes under any selection");
+    }
+
+    // Build styled diff lines with colors (unified diff format with line numbers)
+    let mut diff_lines: Vec<tui::text::Spans> = Vec::new();
+
+    for hunk in &hunks {
+        // Removed lines (old content) from diff_base - red color
+        if hunk.before.start < hunk.before.end {
+            let start_char = diff_base.line_to_char(hunk.before.start as usize);
+            let end_char = diff_base.line_to_char(hunk.before.end as usize);
+            let old_text: String = diff_base.slice(start_char..end_char).chunks().collect();
+            for (i, line) in old_text.lines().enumerate() {
+                let line_num = hunk.before.start + i as u32 + 1;
+                let spans = tui::text::Spans::from(vec![
+                    tui::text::Span::styled(
+                        format!("{:>4} ", line_num),
+                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
+                    ),
+                    tui::text::Span::styled(
+                        format!("- {}", line),
+                        helix_view::graphics::Style::default()
+                            .fg(helix_view::graphics::Color::White)
+                            .bg(helix_view::graphics::Color::Red),
+                    ),
+                ]);
+                diff_lines.push(spans);
+            }
+        }
+
+        // Added lines (new content) from doc_text - green color
+        if hunk.after.start < hunk.after.end {
+            let start_char = doc_text.line_to_char(hunk.after.start as usize);
+            let end_char = doc_text.line_to_char(hunk.after.end as usize);
+            let new_text: String = doc_text.slice(start_char..end_char).chunks().collect();
+            for (i, line) in new_text.lines().enumerate() {
+                let line_num = hunk.after.start + i as u32 + 1;
+                let spans = tui::text::Spans::from(vec![
+                    tui::text::Span::styled(
+                        format!("{:>4} ", line_num),
+                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
+                    ),
+                    tui::text::Span::styled(
+                        format!("+ {}", line),
+                        helix_view::graphics::Style::default()
+                            .fg(helix_view::graphics::Color::White)
+                            .bg(helix_view::graphics::Color::Green),
+                    ),
+                ]);
+                diff_lines.push(spans);
+            }
+        }
+    }
+
+    drop(diff);
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let cursor_pos = editor.cursor().0.unwrap_or_default();
+                let contents = tui::text::Text::from(diff_lines);
+                let contents = ui::Text::from(contents);
+                let popup = Popup::new("diff-preview", contents)
+                    .auto_close(true)
+                    .position(Some(helix_core::Position::new(cursor_pos.row + 1, 0)));
+                compositor.replace_or_push("diff-preview", popup);
+            },
+        ));
+        Ok(call)
+    };
+
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
 fn clear_register(
     cx: &mut compositor::Context,
     args: Args,
@@ -3584,6 +3685,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["diffget", "diffg"],
         doc: "Reset the diff change at the cursor position.",
         fun: reset_diff_change,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "preview-diff-change",
+        aliases: &["diffpreview"],
+        doc: "Preview the diff change at the cursor position in a popup.",
+        fun: preview_diff_change,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
