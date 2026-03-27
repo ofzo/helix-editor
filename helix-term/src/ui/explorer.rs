@@ -9,7 +9,7 @@ use helix_view::{
     editor::{Action, ExplorerPosition},
     graphics::{CursorKind, Rect},
     info::Info,
-    input::{Event, KeyEvent},
+    input::{Event, KeyCode, KeyEvent, KeyModifiers},
     theme::Style,
     Editor,
 };
@@ -424,6 +424,50 @@ impl Explorer {
         })
     }
 
+    fn open_split(item: &mut FileInfo, cx: &mut Context, state: &mut State) -> TreeOp {
+        (|| -> Result<TreeOp> {
+            if item.path == Path::new("") {
+                return Ok(TreeOp::Noop);
+            }
+            let meta = std::fs::metadata(&item.path)?;
+            if meta.is_file() {
+                // 使用 VerticalSplit 在右侧打开新窗口
+                cx.editor.open(&item.path, Action::VerticalSplit)?;
+                state.focus = false;
+                return Ok(TreeOp::Noop);
+            }
+
+            if item.path.is_dir() {
+                return Ok(TreeOp::GetChildsAndInsert);
+            }
+
+            Err(anyhow::anyhow!("Unknown file type: {:?}", meta.file_type()))
+        })()
+        .unwrap_or_else(|err| {
+            cx.editor.set_error(format!("{err}"));
+            TreeOp::Noop
+        })
+    }
+
+    /// 在右侧分屏打开当前选中的文件
+    fn open_selected_split(&mut self, cx: &mut Context) -> Result<()> {
+        let current_path = self.tree.current_item()?.path.clone();
+        if current_path.is_file() {
+            cx.editor.open(&current_path, Action::VerticalSplit)?;
+            self.state.focus = false;
+            self.show_help = false;
+        } else if current_path.is_dir() {
+            // 如果是目录，展开/折叠目录
+            let enter_event = Event::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            });
+            self.tree
+                .handle_key_event(&enter_event, cx, &mut self.state);
+        }
+        Ok(())
+    }
+
     fn render_tree(
         &mut self,
         area: Rect,
@@ -544,6 +588,7 @@ impl Explorer {
                 ("a", "Add file/folder"),
                 ("r", "Rename file/folder"),
                 ("d", "Delete file"),
+                ("s", "Open in split"),
                 ("B", "Change root to parent folder"),
                 ("]", "Change root to current folder"),
                 ("[", "Go to previous root"),
@@ -782,6 +827,7 @@ impl Component for Explorer {
                 key!('-') | key!('_') => self.decrease_size(),
                 key!('+') | key!('=') => self.increase_size(),
                 key!('.') => self.toggle_show_ignored(),
+                key!('s') => self.open_selected_split(cx)?,
                 _ => {
                     self.tree
                         .handle_key_event(&Event::Key(*key_event), cx, &mut self.state);
