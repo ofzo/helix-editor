@@ -39,6 +39,7 @@ pub fn render_document(
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     decorations: DecorationManager,
+    folded_line_ranges: &[(usize, usize)],
 ) {
     let mut renderer = TextRenderer::new(
         surface,
@@ -57,6 +58,7 @@ pub fn render_document(
         overlay_highlights,
         theme,
         decorations,
+        folded_line_ranges,
     )
 }
 
@@ -71,6 +73,7 @@ pub fn render_text(
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     mut decorations: DecorationManager,
+    folded_line_ranges: &[(usize, usize)],
 ) {
     let row_off = visual_offset_from_block(text, anchor, anchor, text_fmt, text_annotations)
         .0
@@ -92,6 +95,22 @@ pub fn render_text(
     let mut last_line_indent_level = 0;
     let mut reached_view_top = false;
 
+    // Track visual row offset due to folded lines (in visual rows, not document lines)
+    let mut fold_row_offset: usize = 0;
+    // Track which fold ranges we've already rendered placeholders for
+    let mut fold_placeholder_rendered: Vec<bool> = vec![false; folded_line_ranges.len()];
+    // Track the first visual row of the current fold being skipped
+    let mut fold_visual_start: Option<usize> = None;
+    // Track the last visual row seen inside a fold
+    let mut fold_last_visual_row: usize = 0;
+
+    /// Check if a document line falls within a folded (hidden) range
+    fn is_line_folded(line: usize, folded_line_ranges: &[(usize, usize)]) -> Option<usize> {
+        folded_line_ranges
+            .iter()
+            .position(|&(start, end)| line >= start && line <= end)
+    }
+
     loop {
         let Some(mut grapheme) = formatter.next() else {
             break;
@@ -102,6 +121,53 @@ pub fn render_text(
             continue;
         }
         grapheme.visual_pos.row -= row_off;
+
+        // Check if this grapheme's line is inside a folded region
+        if let Some(fold_idx) = is_line_folded(grapheme.line_idx, folded_line_ranges) {
+            // Advance highlighters past folded content to keep them in sync
+            while grapheme.char_idx >= syntax_highlighter.pos {
+                syntax_highlighter.advance();
+            }
+            while grapheme.char_idx >= overlay_highlighter.pos {
+                overlay_highlighter.advance();
+            }
+
+            // Track the visual row span of this fold
+            if fold_visual_start.is_none() {
+                fold_visual_start = Some(grapheme.visual_pos.row);
+            }
+            fold_last_visual_row = grapheme.visual_pos.row;
+
+            // Render fold placeholder once per fold range
+            if !fold_placeholder_rendered[fold_idx] {
+                let (fold_start, fold_end) = folded_line_ranges[fold_idx];
+                let hidden_lines = fold_end - fold_start + 1;
+                fold_placeholder_rendered[fold_idx] = true;
+
+                // Render fold placeholder at the end of the header line
+                let placeholder = format!(" ... ({} lines)", hidden_lines);
+                let fold_style = theme
+                    .try_get("ui.text.info")
+                    .unwrap_or_else(|| renderer.text_style);
+
+                // Use the header line's already-rendered visual position
+                if last_line_pos.visual_line != u16::MAX {
+                    let x = renderer.viewport.x + last_line_end as u16;
+                    let y = last_line_pos.visual_line;
+                    renderer.set_string(x, y, &placeholder, fold_style);
+                }
+            }
+            continue;
+        }
+
+        // When we exit a fold, compute the actual visual rows consumed
+        if let Some(start_row) = fold_visual_start.take() {
+            fold_row_offset += fold_last_visual_row - start_row + 1;
+        }
+
+        // Adjust visual position by subtracting folded visual rows
+        grapheme.visual_pos.row = grapheme.visual_pos.row.saturating_sub(fold_row_offset);
+
         if !reached_view_top {
             decorations.prepare_for_rendering(grapheme.char_idx);
             reached_view_top = true;
@@ -167,6 +233,7 @@ pub fn render_text(
             grapheme.visual_pos,
         );
         last_line_end = grapheme.visual_pos.col + grapheme_width;
+
     }
 
     renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);

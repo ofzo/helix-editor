@@ -216,6 +216,13 @@ pub struct Document {
     // `ArcSwap` directly.
     syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub repo_root_dir: Arc<PathBuf>,
+
+    /// Cached fold ranges from tree-sitter @fold queries
+    pub fold_ranges: Vec<helix_core::fold::FoldRange>,
+    /// Start lines of currently collapsed folds
+    pub folded_lines: std::collections::HashSet<usize>,
+    /// Whether fold ranges need recomputation
+    pub folds_outdated: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -731,6 +738,9 @@ impl Document {
             color_swatch_controller: TaskController::new(),
             syn_loader,
             repo_root_dir: Arc::new(PathBuf::from("/")),
+            fold_ranges: Vec::new(),
+            folded_lines: std::collections::HashSet::new(),
+            folds_outdated: true,
         }
     }
 
@@ -1453,6 +1463,10 @@ impl Document {
             }
         }
 
+        // Invalidate fold state on edit
+        self.folds_outdated = true;
+        self.folded_lines.clear();
+
         // TODO: all of that should likely just be hooks
         // start computing the diff in parallel
         if let Some(diff_handle) = &self.diff_handle {
@@ -1884,6 +1898,116 @@ impl Document {
         } else {
             self.diff_handle = None;
         }
+    }
+
+    /// Recompute fold ranges from tree-sitter if outdated.
+    pub fn ensure_fold_ranges(&mut self) {
+        if !self.folds_outdated {
+            return;
+        }
+        self.folds_outdated = false;
+
+        let loader = self.syn_loader.load();
+        if let Some(syntax) = &self.syntax {
+            self.fold_ranges =
+                helix_core::fold::compute_fold_ranges(syntax, self.text.slice(..), &loader);
+        } else {
+            self.fold_ranges.clear();
+        }
+    }
+
+    /// Find the fold range at a given line (either starting at or containing the line).
+    pub fn fold_range_at_line(&self, line: usize) -> Option<&helix_core::fold::FoldRange> {
+        // First try exact match on start_line
+        if let Ok(idx) = self.fold_ranges.binary_search_by_key(&line, |r| r.start_line) {
+            return Some(&self.fold_ranges[idx]);
+        }
+        // Then find the fold containing this line
+        self.fold_ranges
+            .iter()
+            .find(|r| r.start_line <= line && line <= r.end_line)
+    }
+
+    /// Toggle the fold at the given line. Returns true if a fold was toggled.
+    pub fn toggle_fold_at_line(&mut self, line: usize) -> bool {
+        // Find the fold range for this line
+        let fold_start = if let Some(range) = self.fold_range_at_line(line) {
+            range.start_line
+        } else {
+            return false;
+        };
+
+        if self.folded_lines.contains(&fold_start) {
+            self.folded_lines.remove(&fold_start);
+        } else {
+            self.folded_lines.insert(fold_start);
+        }
+        true
+    }
+
+    /// Returns false if the line is inside an active fold's hidden region.
+    pub fn is_line_visible(&self, line: usize) -> bool {
+        for &fold_start in &self.folded_lines {
+            if let Some(range) = self.fold_range_at_line(fold_start) {
+                if line > range.start_line && line <= range.end_line {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Skip over folded lines going forward, returning the next visible line.
+    pub fn next_visible_line(&self, line: usize) -> usize {
+        let total_lines = self.text.len_lines();
+        let mut current = line;
+        while current < total_lines && !self.is_line_visible(current) {
+            current += 1;
+        }
+        current.min(total_lines.saturating_sub(1))
+    }
+
+    /// Skip over folded lines going backward, returning the previous visible line.
+    pub fn prev_visible_line(&self, line: usize) -> usize {
+        let mut current = line;
+        while current > 0 && !self.is_line_visible(current) {
+            current -= 1;
+        }
+        current
+    }
+
+    /// Count the total number of hidden (folded) document lines between two document lines.
+    pub fn count_folded_lines_in_range(&self, from_line: usize, to_line: usize) -> usize {
+        if self.folded_lines.is_empty() || from_line >= to_line {
+            return 0;
+        }
+        self.folded_line_ranges()
+            .iter()
+            .map(|&(start, end)| {
+                let clamped_start = start.max(from_line);
+                let clamped_end = end.min(to_line);
+                if clamped_start <= clamped_end {
+                    clamped_end - clamped_start + 1
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    /// Get the sorted list of active folded line ranges (hidden regions) for rendering.
+    /// Returns pairs of (first_hidden_line, last_hidden_line).
+    pub fn folded_line_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges: Vec<(usize, usize)> = self
+            .folded_lines
+            .iter()
+            .filter_map(|&start| {
+                self.fold_range_at_line(start)
+                    .map(|r| (r.start_line + 1, r.end_line))
+            })
+            .collect();
+        ranges.sort_by_key(|r| r.0);
+        ranges
     }
 
     pub fn version_control_head(&self) -> Option<Arc<Box<str>>> {

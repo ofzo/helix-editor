@@ -33,6 +33,7 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers(editor, doc, view, theme, is_focused),
             GutterType::Spacer => padding(editor, doc, view, theme, is_focused),
             GutterType::Diff => diff(editor, doc, view, theme, is_focused),
+            GutterType::Folds => fold_indicators(editor, doc, view, theme, is_focused),
         }
     }
 
@@ -42,6 +43,7 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers_width(view, doc),
             GutterType::Spacer => 1,
             GutterType::Diff => 1,
+            GutterType::Folds => 1,
         }
     }
 }
@@ -146,6 +148,40 @@ pub fn diff<'doc>(
     } else {
         Box::new(move |_, _, _, _| None)
     }
+}
+
+pub fn fold_indicators<'doc>(
+    _editor: &'doc Editor,
+    doc: &'doc Document,
+    _view: &View,
+    theme: &Theme,
+    _is_focused: bool,
+) -> GutterFn<'doc> {
+    let fold_style = theme.try_get("ui.gutter.fold").unwrap_or_else(|| theme.get("ui.text.info"));
+    let fold_ranges = &doc.fold_ranges;
+    let folded_lines = &doc.folded_lines;
+
+    Box::new(
+        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+            if !first_visual_line {
+                return None;
+            }
+            // Check if this line is a fold start
+            let is_fold_start = fold_ranges
+                .binary_search_by_key(&line, |r| r.start_line)
+                .is_ok();
+            if !is_fold_start {
+                return None;
+            }
+
+            if folded_lines.contains(&line) {
+                write!(out, "▸").unwrap();
+            } else {
+                write!(out, "▾").unwrap();
+            }
+            Some(fold_style)
+        },
+    )
 }
 
 pub fn line_numbers<'doc>(

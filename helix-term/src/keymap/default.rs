@@ -306,6 +306,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "C-u" | "backspace" => page_cursor_half_up,
             "C-d" | "space" => page_cursor_half_down,
 
+            "a" => toggle_fold,
+
             "/" => search,
             "?" => rsearch,
             "n" => search_next,
