@@ -1917,32 +1917,29 @@ impl Document {
     }
 
     /// Find the fold range at a given line (either starting at or containing the line).
+    /// When the line is inside multiple nested folds, returns the innermost one.
     pub fn fold_range_at_line(&self, line: usize) -> Option<&helix_core::fold::FoldRange> {
         // First try exact match on start_line
         if let Ok(idx) = self.fold_ranges.binary_search_by_key(&line, |r| r.start_line) {
             return Some(&self.fold_ranges[idx]);
         }
-        // Then find the fold containing this line
+        // Find the innermost fold containing this line (last match has largest start_line)
         self.fold_ranges
             .iter()
-            .find(|r| r.start_line <= line && line <= r.end_line)
+            .filter(|r| r.start_line <= line && line <= r.end_line)
+            .last()
     }
 
-    /// Toggle the fold at the given line. Returns true if a fold was toggled.
-    pub fn toggle_fold_at_line(&mut self, line: usize) -> bool {
-        // Find the fold range for this line
-        let fold_start = if let Some(range) = self.fold_range_at_line(line) {
-            range.start_line
-        } else {
-            return false;
-        };
+    /// Toggle the fold at the given line. Returns the fold start line if toggled.
+    pub fn toggle_fold_at_line(&mut self, line: usize) -> Option<usize> {
+        let fold_start = self.fold_range_at_line(line)?.start_line;
 
         if self.folded_lines.contains(&fold_start) {
             self.folded_lines.remove(&fold_start);
         } else {
             self.folded_lines.insert(fold_start);
         }
-        true
+        Some(fold_start)
     }
 
     /// Returns false if the line is inside an active fold's hidden region.

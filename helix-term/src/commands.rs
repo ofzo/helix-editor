@@ -6032,8 +6032,16 @@ fn toggle_fold(cx: &mut Context) {
     let text = doc.text().slice(..);
     let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
     doc.ensure_fold_ranges();
-    if !doc.toggle_fold_at_line(cursor_line) {
-        cx.editor.set_status("No fold at cursor position");
+    match doc.toggle_fold_at_line(cursor_line) {
+        Some(fold_start) if fold_start != cursor_line => {
+            // Move cursor to the fold start line
+            let pos = doc.text().line_to_char(fold_start);
+            doc.set_selection(view.id, Selection::point(pos));
+        }
+        Some(_) => {}
+        None => {
+            cx.editor.set_status("No fold at cursor position");
+        }
     }
 }
 
