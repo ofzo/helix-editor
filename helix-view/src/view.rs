@@ -261,16 +261,31 @@ impl View {
 
         let cursor = doc.selection(self.id).primary().cursor(doc_text);
         let mut offset = view_offset;
+
+        // Account for folded lines: the visual offset from the formatter doesn't
+        // know about folds, so we need to extend the viewport end to ensure the
+        // cursor position can be computed, and then adjust the result.
+        let anchor_line = doc_text.char_to_line(offset.anchor.min(doc_text.len_chars()));
+        let cursor_line = doc_text.char_to_line(cursor.min(doc_text.len_chars()));
+        let folded_lines_before_cursor =
+            doc.count_folded_lines_in_range(anchor_line, cursor_line);
+
         let off = visual_offset_from_anchor(
             doc_text,
             offset.anchor,
             cursor,
             &text_fmt,
             &annotations,
-            vertical_viewport_end,
+            vertical_viewport_end + folded_lines_before_cursor,
         );
 
-        let (new_anchor, at_top) = match off {
+        // Adjust the visual position by subtracting folded lines
+        let off_adjusted = off.map(|(mut pos, anchor)| {
+            pos.row = pos.row.saturating_sub(folded_lines_before_cursor);
+            (pos, anchor)
+        });
+
+        let (new_anchor, at_top) = match off_adjusted {
             Ok((visual_pos, _)) if visual_pos.row < scrolloff_top + offset.vertical_offset => {
                 if CENTERING {
                     // cursor out of view
@@ -414,16 +429,22 @@ impl View {
         let text_fmt = doc.text_format(viewport.width, None);
         let annotations = self.text_annotations(doc, None);
 
+        // Account for folded lines between anchor and pos
+        let anchor_line = text.char_to_line(view_offset.anchor.min(text.len_chars()));
+        let pos_line = text.char_to_line(pos.min(text.len_chars()));
+        let folded_lines = doc.count_folded_lines_in_range(anchor_line, pos_line);
+
         let mut pos = visual_offset_from_anchor(
             text,
             view_offset.anchor,
             pos,
             &text_fmt,
             &annotations,
-            viewport.height as usize,
+            viewport.height as usize + folded_lines,
         )
         .ok()?
         .0;
+        pos.row = pos.row.saturating_sub(folded_lines);
         if pos.row < view_offset.vertical_offset {
             return None;
         }

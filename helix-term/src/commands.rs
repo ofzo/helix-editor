@@ -615,6 +615,7 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
+        toggle_fold, "Toggle fold at cursor position",
     );
 }
 
@@ -757,11 +758,13 @@ fn move_char_right(cx: &mut Context) {
 }
 
 fn move_line_up(cx: &mut Context) {
-    move_impl(cx, move_vertically, Direction::Backward, Movement::Move)
+    move_impl(cx, move_vertically, Direction::Backward, Movement::Move);
+    adjust_cursor_for_folds(cx, Direction::Backward);
 }
 
 fn move_line_down(cx: &mut Context) {
-    move_impl(cx, move_vertically, Direction::Forward, Movement::Move)
+    move_impl(cx, move_vertically, Direction::Forward, Movement::Move);
+    adjust_cursor_for_folds(cx, Direction::Forward);
 }
 
 fn move_visual_line_up(cx: &mut Context) {
@@ -770,7 +773,8 @@ fn move_visual_line_up(cx: &mut Context) {
         move_vertically_visual,
         Direction::Backward,
         Movement::Move,
-    )
+    );
+    adjust_cursor_for_folds(cx, Direction::Backward);
 }
 
 fn move_visual_line_down(cx: &mut Context) {
@@ -779,7 +783,33 @@ fn move_visual_line_down(cx: &mut Context) {
         move_vertically_visual,
         Direction::Forward,
         Movement::Move,
-    )
+    );
+    adjust_cursor_for_folds(cx, Direction::Forward);
+}
+
+/// After a vertical movement, if the cursor lands inside a folded region,
+/// jump to the next/prev visible line.
+fn adjust_cursor_for_folds(cx: &mut Context, dir: Direction) {
+    let (view, doc) = current!(cx.editor);
+    if doc.folded_lines.is_empty() {
+        return;
+    }
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let cursor_pos = range.cursor(text);
+        let cursor_line = text.char_to_line(cursor_pos);
+        let target_line = match dir {
+            Direction::Forward => doc.next_visible_line(cursor_line),
+            Direction::Backward => doc.prev_visible_line(cursor_line),
+        };
+        if target_line == cursor_line {
+            return range;
+        }
+        // Move cursor to the start of the target line
+        let new_pos = text.line_to_char(target_line);
+        Range::new(new_pos, new_pos)
+    });
+    doc.set_selection(view.id, selection);
 }
 
 fn extend_char_left(cx: &mut Context) {
@@ -5891,6 +5921,16 @@ fn scroll_up(cx: &mut Context) {
 
 fn scroll_down(cx: &mut Context) {
     scroll(cx, cx.count(), Direction::Forward, false);
+}
+
+fn toggle_fold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    doc.ensure_fold_ranges();
+    if !doc.toggle_fold_at_line(cursor_line) {
+        cx.editor.set_status("No fold at cursor position");
+    }
 }
 
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {

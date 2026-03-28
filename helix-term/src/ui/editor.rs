@@ -116,14 +116,23 @@ impl EditorView {
             decorations.add_decoration(line_decoration);
         }
 
+        let folded_ranges = doc.folded_line_ranges();
+        // Extend viewport height to account for folded lines so the highlighter
+        // covers all content that will actually render on screen.
+        let total_hidden: u16 = folded_ranges
+            .iter()
+            .map(|(start, end)| (end - start + 1) as u16)
+            .sum();
+        let effective_height = inner.height.saturating_add(total_hidden);
+
         let syntax_highlighter =
-            Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);
+            Self::doc_syntax_highlighter(doc, view_offset.anchor, effective_height, &loader);
         let mut overlays = Vec::new();
 
         overlays.push(Self::overlay_syntax_highlights(
             doc,
             view_offset.anchor,
-            inner.height,
+            effective_height,
             &text_annotations,
         ));
 
@@ -133,7 +142,7 @@ impl EditorView {
             .unwrap_or(config.rainbow_brackets)
         {
             if let Some(overlay) =
-                Self::doc_rainbow_highlights(doc, view_offset.anchor, inner.height, theme, &loader)
+                Self::doc_rainbow_highlights(doc, view_offset.anchor, effective_height, theme, &loader)
             {
                 overlays.push(overlay);
             }
@@ -206,6 +215,7 @@ impl EditorView {
             overlays,
             theme,
             decorations,
+            &folded_ranges,
         );
 
         // if we're not at the edge of the screen, draw a right border
