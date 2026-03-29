@@ -3836,14 +3836,21 @@ fn goto_line_without_jumplist(
 ) {
     if let Some(count) = count {
         let (view, doc) = current!(editor);
-        let text = doc.text().slice(..);
-        let max_line = if text.line(text.len_lines() - 1).len_chars() == 0 {
-            // If the last line is blank, don't jump to it.
-            text.len_lines().saturating_sub(2)
-        } else {
-            text.len_lines() - 1
+        let line_idx = {
+            let text = doc.text().slice(..);
+            let max_line = if text.line(text.len_lines() - 1).len_chars() == 0 {
+                // If the last line is blank, don't jump to it.
+                text.len_lines().saturating_sub(2)
+            } else {
+                text.len_lines() - 1
+            };
+            std::cmp::min(count.get() - 1, max_line)
         };
-        let line_idx = std::cmp::min(count.get() - 1, max_line);
+
+        // Unfold any fold hiding the target line so the cursor remains visible
+        doc.ensure_line_visible(line_idx);
+
+        let text = doc.text().slice(..);
         let pos = text.line_to_char(line_idx);
         let selection = doc
             .selection(view.id)
