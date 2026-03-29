@@ -1013,6 +1013,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 &cx.editor.theme,
                 decorations,
                 &[],
+                None,
             );
         }
     }

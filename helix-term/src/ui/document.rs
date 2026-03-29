@@ -40,6 +40,7 @@ pub fn render_document(
     theme: &Theme,
     decorations: DecorationManager,
     folded_line_ranges: &[(usize, usize)],
+    scope_range: Option<(usize, usize, usize)>,
 ) {
     let mut renderer = TextRenderer::new(
         surface,
@@ -48,6 +49,7 @@ pub fn render_document(
         Position::new(offset.vertical_offset, offset.horizontal_offset),
         viewport,
     );
+    renderer.scope_range = scope_range;
     render_text(
         &mut renderer,
         doc.text().slice(..),
@@ -186,7 +188,7 @@ pub fn render_text(
             // in that case we don't need to draw indent guides/virtual text
             if last_line_pos.doc_line != usize::MAX {
                 // draw indent guides for the last line
-                renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+                renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line, last_line_pos.doc_line);
                 is_in_indent_area = true;
                 decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
             }
@@ -236,7 +238,7 @@ pub fn render_text(
 
     }
 
-    renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+    renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line, last_line_pos.doc_line);
     decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
 }
 
@@ -256,6 +258,9 @@ pub struct TextRenderer<'a> {
     pub indent_width: u16,
     pub starting_indent: usize,
     pub draw_indent_guides: bool,
+    pub scope_only: bool,
+    /// (indent_col, start_line, end_line) — the scope range to draw a single guide for
+    pub scope_range: Option<(usize, usize, usize)>,
     pub viewport: Rect,
     pub offset: Position,
 }
@@ -338,6 +343,8 @@ impl<'a> TextRenderer<'a> {
             ),
             text_style,
             draw_indent_guides: editor_config.indent_guides.render,
+            scope_only: editor_config.indent_guides.scope,
+            scope_range: None,
             viewport,
             offset,
         }
@@ -462,7 +469,7 @@ impl<'a> TextRenderer<'a> {
     /// Overlay indentation guides ontop of a rendered line
     /// The indentation level is computed in `draw_lines`.
     /// Therefore this function must always be called afterwards.
-    pub fn draw_indent_guides(&mut self, indent_level: usize, mut row: u16) {
+    pub fn draw_indent_guides(&mut self, indent_level: usize, mut row: u16, doc_line: usize) {
         if !self.draw_indent_guides || self.offset.row > row as usize {
             return;
         }
@@ -475,6 +482,30 @@ impl<'a> TextRenderer<'a> {
             // indent might be a bit after offset.col
             self.offset.col + self.viewport.width as usize + (self.indent_width as usize - 1),
         ) / self.indent_width as usize;
+
+        if self.scope_only {
+            if let Some((scope_col, scope_start, scope_end)) = self.scope_range {
+                // Only draw within the cursor's scope line range
+                if doc_line < scope_start || doc_line > scope_end {
+                    return;
+                }
+                let scope_indent = scope_col / self.indent_width as usize;
+                if scope_indent >= self.starting_indent && scope_indent < end_indent {
+                    let x = (self.viewport.x as usize
+                        + (scope_indent * self.indent_width as usize)
+                        - self.offset.col) as u16;
+                    let y = self.viewport.y + row;
+                    debug_assert!(self.surface.in_bounds(x, y));
+                    self.surface.set_string(
+                        x,
+                        y,
+                        &self.indent_guide_char,
+                        self.indent_guide_style,
+                    );
+                }
+            }
+            return;
+        }
 
         for i in self.starting_indent..end_indent {
             let x = (self.viewport.x as usize + (i * self.indent_width as usize) - self.offset.col)
