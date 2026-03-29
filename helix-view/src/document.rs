@@ -1954,6 +1954,25 @@ impl Document {
         true
     }
 
+    /// Unfold any fold whose hidden region contains the given line, making it visible.
+    pub fn ensure_line_visible(&mut self, line: usize) {
+        let to_remove: Vec<usize> = self
+            .folded_lines
+            .iter()
+            .copied()
+            .filter(|&fold_start| {
+                if let Some(range) = self.fold_range_at_line(fold_start) {
+                    line > range.start_line && line <= range.end_line
+                } else {
+                    false
+                }
+            })
+            .collect();
+        for fold_start in to_remove {
+            self.folded_lines.remove(&fold_start);
+        }
+    }
+
     /// Skip over folded lines going forward, returning the next visible line.
     pub fn next_visible_line(&self, line: usize) -> usize {
         let total_lines = self.text.len_lines();
