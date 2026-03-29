@@ -171,7 +171,8 @@ pub fn fold_indicators<'doc>(
                 .binary_search_by_key(&line, |r| r.start_line)
                 .is_ok();
             if !is_fold_start {
-                return None;
+                write!(out, " ").unwrap();
+                return Some(fold_style);
             }
 
             if folded_lines.contains(&line) {
