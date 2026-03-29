@@ -196,6 +196,66 @@ impl EditorView {
             inline_diagnostic_config,
             config.end_of_line_diagnostics,
         ));
+        // Compute scope range for scope-only indent guides: (indent_col, start_line, end_line)
+        let scope_range = if config.indent_guides.scope {
+            let text = doc.text().slice(..);
+            let cursor_pos = primary_cursor;
+            let cursor_line = text.char_to_line(cursor_pos);
+            let tab_width = doc.tab_width();
+            let indent_width = doc.indent_style.indent_width(tab_width);
+            let total_lines = text.len_lines();
+
+            let line_indent = |line: usize| -> usize {
+                let line_text = text.line(line);
+                let mut col = 0usize;
+                for ch in line_text.chars() {
+                    match ch {
+                        ' ' => col += 1,
+                        '\t' => col += tab_width,
+                        _ => break,
+                    }
+                }
+                col
+            };
+
+            let is_blank = |line: usize| -> bool {
+                text.line(line)
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            };
+
+            let cursor_indent = line_indent(cursor_line);
+            // Walk backward to find scope start (first non-blank line with strictly lower indent)
+            let mut scope_col = 0;
+            let mut scope_start = 0;
+            for line in (0..cursor_line).rev() {
+                if is_blank(line) {
+                    continue;
+                }
+                let indent = line_indent(line);
+                if indent < cursor_indent {
+                    scope_col = (indent / indent_width) * indent_width;
+                    scope_start = line;
+                    break;
+                }
+            }
+            // Walk forward to find scope end (first line with indent <= scope_col)
+            let mut scope_end = total_lines.saturating_sub(1);
+            for line in (cursor_line + 1)..total_lines {
+                if is_blank(line) {
+                    continue;
+                }
+                let indent = line_indent(line);
+                if indent <= scope_col {
+                    scope_end = line.saturating_sub(1);
+                    break;
+                }
+            }
+            Some((scope_col, scope_start + 1, scope_end))
+        } else {
+            None
+        };
+
         render_document(
             surface,
             inner,
@@ -206,6 +266,7 @@ impl EditorView {
             overlays,
             theme,
             decorations,
+            scope_range,
         );
 
         // if we're not at the edge of the screen, draw a right border
