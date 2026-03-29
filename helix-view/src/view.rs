@@ -308,8 +308,25 @@ impl View {
             } else {
                 viewport.height as isize - scrolloff_bottom as isize - 1
             };
-            (offset.anchor, offset.vertical_offset) =
-                char_idx_at_visual_offset(doc_text, cursor, -v_off, 0, &text_fmt, &annotations);
+            if !doc.folded_lines.is_empty() {
+                // Walk backward from cursor counting only visible lines,
+                // since char_idx_at_visual_offset doesn't know about folds.
+                let mut remaining = v_off as usize;
+                let mut line = cursor_line;
+                while remaining > 0 && line > 0 {
+                    line -= 1;
+                    if doc.is_line_visible(line) {
+                        remaining -= 1;
+                    }
+                }
+                offset.anchor = doc_text.line_to_char(line);
+                offset.vertical_offset = 0;
+            } else {
+                (offset.anchor, offset.vertical_offset) =
+                    char_idx_at_visual_offset(
+                        doc_text, cursor, -v_off, 0, &text_fmt, &annotations,
+                    );
+            }
         }
 
         if text_fmt.soft_wrap {
