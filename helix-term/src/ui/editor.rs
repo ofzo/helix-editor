@@ -1862,13 +1862,13 @@ impl Component for EditorView {
                     surface.set_string(x, sep_y, "─", sep_style);
                 }
                 // Draw label on separator
-                let label = " Terminal ";
+                let label = format!(" {} ", terminal.title());
                 let label_style = cx
                     .editor
                     .theme
                     .try_get("ui.statusline.separator")
                     .unwrap_or(sep_style);
-                surface.set_string(area.x + 1, sep_y, label, label_style);
+                surface.set_string(area.x + 1, sep_y, &label, label_style);
 
                 terminal.render(term_area, surface, cx);
             }

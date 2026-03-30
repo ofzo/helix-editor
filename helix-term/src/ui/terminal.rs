@@ -89,6 +89,7 @@ pub struct TerminalPane {
     term: Arc<FairMutex<Term<EventProxy>>>,
     sender: alacritty_terminal::event_loop::EventLoopSender,
     exited: Arc<AtomicBool>,
+    title: String,
     focus: bool,
     open: bool,
     panel_height: u16,
@@ -129,10 +130,15 @@ impl TerminalPane {
         let sender = event_loop.channel();
         event_loop.spawn();
 
+        let title = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "Terminal".to_string());
+
         Ok(Self {
             term,
             sender,
             exited,
+            title,
             focus: true,
             open: true,
             panel_height,
@@ -181,6 +187,10 @@ impl TerminalPane {
 
     pub fn panel_height(&self) -> u16 {
         self.panel_height
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     /// Returns true if the shell process has exited.

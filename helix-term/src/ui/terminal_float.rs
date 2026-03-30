@@ -63,7 +63,7 @@ impl Component for FloatTerminal {
         surface.clear_with(area, border_style);
 
         // Draw border frame
-        let title = " Terminal ";
+        let title = format!(" {} ", self.terminal.title());
         let top_left = area.x;
         let top_right = area.x + area.width.saturating_sub(1);
         let bottom_left = area.x;
