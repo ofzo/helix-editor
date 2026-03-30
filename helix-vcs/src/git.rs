@@ -233,31 +233,63 @@ fn find_file_in_commit(repo: &Repository, commit: &Commit, file: &Path) -> Resul
 /// Check if a path is ignored by gitignore rules
 /// Returns true if the path is ignored, false otherwise
 pub fn is_ignored(path: &Path) -> bool {
-    // Try to discover the repository
-    let Ok(repo) = open_repo(path) else {
-        return false;
+    are_ignored(&[path.to_path_buf()])[0]
+}
+
+/// Batch check if paths are ignored by gitignore rules.
+/// Returns a `Vec<bool>` aligned with the input paths.
+/// Uses a single `git check-ignore` subprocess for all paths.
+pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
+    if paths.is_empty() {
+        return vec![];
+    }
+
+    let base = match paths[0].parent() {
+        Some(p) => p,
+        None => return vec![false; paths.len()],
+    };
+
+    let Ok(repo) = open_repo(base) else {
+        return vec![false; paths.len()];
     };
 
     let repo = repo.to_thread_local();
-    let work_dir = match repo.workdir() {
-        Some(dir) => dir,
-        None => return false,
+    let Some(work_dir) = repo.workdir() else {
+        return vec![false; paths.len()];
     };
 
-    // Get the path relative to the work directory
-    let Ok(rel_path) = path.strip_prefix(work_dir) else {
-        return false;
-    };
-
-    // Use git command to check if path is ignored
-    // This is the most reliable way across different gix versions
-    match std::process::Command::new("git")
-        .args(&["check-ignore", "-q"])
-        .arg(path)
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["check-ignore", "--stdin", "-z"])
         .current_dir(work_dir)
-        .output()
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+
+    let Ok(mut child) = cmd.spawn() else {
+        return vec![false; paths.len()];
+    };
+
+    if let Some(stdin) = child.stdin.take() {
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(stdin);
+        for path in paths {
+            let _ = write!(writer, "{}\0", path.display());
+        }
     }
+
+    let Ok(output) = child.wait_with_output() else {
+        return vec![false; paths.len()];
+    };
+
+    let ignored_set: std::collections::HashSet<&std::ffi::OsStr> = output
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| std::ffi::OsStr::new(std::str::from_utf8(s).unwrap_or("")))
+        .collect();
+
+    paths
+        .iter()
+        .map(|p| ignored_set.contains(p.as_os_str()))
+        .collect()
 }

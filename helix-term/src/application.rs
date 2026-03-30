@@ -143,10 +143,14 @@ impl Application {
         } else if !args.files.is_empty() {
             let mut files_it = args.files.into_iter().peekable();
 
-            // If the first file is a directory, skip it and open a picker
-            if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
-                let picker = ui::file_picker(&editor, first);
-                compositor.push(Box::new(overlaid(picker)));
+            // If the first file is a directory, open the explorer sidebar
+            if let Some((_first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
+                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                    match ui::Explorer::from_editor(&editor) {
+                        Ok(explore) => editor_view.explorer = Some(explore),
+                        Err(err) => editor.set_error(format!("{}", err)),
+                    }
+                }
             }
 
             // If there are any more files specified, open them
@@ -220,6 +224,9 @@ impl Application {
             }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
             editor.new_file(Action::VerticalSplit);
+            let cwd = std::env::current_dir().unwrap_or_else(|_| "./".into());
+            let picker = ui::file_picker(&editor, cwd);
+            compositor.push(Box::new(overlaid(picker)));
         } else {
             editor
                 .new_file_from_stdin(Action::VerticalSplit)

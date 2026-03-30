@@ -33,6 +33,17 @@ pub fn is_ignored(path: &Path) -> bool {
     return false;
 }
 
+/// Batch check if paths are ignored by gitignore rules.
+/// Much faster than calling `is_ignored()` per file — uses a single subprocess.
+pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
+    #[cfg(feature = "git")]
+    {
+        return git::are_ignored(paths);
+    }
+    #[cfg(not(feature = "git"))]
+    return vec![false; paths.len()];
+}
+
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
 #[derive(Clone)]

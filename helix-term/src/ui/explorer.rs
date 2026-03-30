@@ -13,12 +13,12 @@ use helix_view::{
     theme::Style,
     Editor,
 };
-use helix_vcs::{is_ignored, FileChangeStatus};
+use helix_vcs::FileChangeStatus;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::{borrow::Cow, fs::DirEntry};
+use std::borrow::Cow;
 use tree::{TreeOp, TreeView, TreeViewItem};
 use tui::{
     buffer::Buffer as Surface,
@@ -102,9 +102,37 @@ impl TreeViewItem for FileInfo {
             FileType::Root | FileType::Folder => {}
             _ => return Ok(vec![]),
         };
-        let ret: Vec<_> = std::fs::read_dir(&self.path)?
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| dir_entry_to_file_info(entry, &self.path, state))
+
+        // Collect entries, filtering .git
+        let entries: Vec<_> = std::fs::read_dir(&self.path)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != ".git")
+            .collect();
+
+        let paths: Vec<PathBuf> = entries.iter().map(|e| self.path.join(e.file_name())).collect();
+
+        // Single batch gitignore check instead of per-file subprocess
+        let ignored = helix_vcs::are_ignored(&paths);
+
+        let ret = entries
+            .into_iter()
+            .zip(ignored)
+            .filter_map(|(entry, is_ignored)| {
+                if !state.show_ignored && is_ignored {
+                    return None;
+                }
+                let meta = entry.metadata().ok()?;
+                let file_type = if meta.is_dir() {
+                    FileType::Folder
+                } else {
+                    FileType::File
+                };
+                Some(FileInfo {
+                    file_type,
+                    path: self.path.join(entry.file_name()),
+                    is_ignored,
+                })
+            })
             .collect();
         Ok(ret)
     }
@@ -126,35 +154,6 @@ impl TreeViewItem for FileInfo {
     }
 }
 
-fn dir_entry_to_file_info(entry: DirEntry, path: &Path, state: &State) -> Option<FileInfo> {
-    let meta = entry.metadata().ok()?;
-    let file_type = match meta.is_dir() {
-        true => FileType::Folder,
-        false => FileType::File,
-    };
-
-    let full_path = path.join(entry.file_name());
-    let file_name = entry.file_name();
-
-    // 始终隐藏 .git 目录
-    if file_name == ".git" {
-        return None;
-    }
-
-    // 检测文件是否被 gitignore
-    let entry_is_ignored = is_ignored(&full_path);
-
-    // 如果 show_ignored 为 false，过滤掉被忽略的文件
-    if !state.show_ignored && entry_is_ignored {
-        return None;
-    }
-
-    Some(FileInfo {
-        file_type,
-        path: full_path,
-        is_ignored: entry_is_ignored,
-    })
-}
 
 #[derive(Clone, Debug)]
 enum PromptAction {
@@ -199,14 +198,8 @@ impl State {
     }
 }
 
-struct ExplorerHistory {
-    tree: TreeView<FileInfo>,
-    current_root: PathBuf,
-}
-
 pub struct Explorer {
     tree: TreeView<FileInfo>,
-    history: Vec<ExplorerHistory>,
     show_help: bool,
     state: State,
     prompt: Option<(PromptAction, Prompt)>,
@@ -221,52 +214,32 @@ pub struct Explorer {
 
 impl Explorer {
     pub fn new(cx: &mut Context) -> Result<Self> {
+        Self::from_editor(cx.editor)
+    }
+
+    pub fn from_editor(editor: &Editor) -> Result<Self> {
         let current_root = std::env::current_dir()
             .unwrap_or_else(|_| "./".into())
             .canonicalize()?;
         let mut explorer = Self {
             tree: Self::new_tree_view(current_root.clone())?,
-            history: vec![],
-            show_help: true,
+                    show_help: true,
             state: State::new(true, current_root),
             prompt: None,
             on_next_key: None,
-            column_width: cx.editor.config().explorer.column_width as u16,
+            column_width: editor.config().explorer.column_width as u16,
             show_ignored: false,
             git_status: HashMap::new(),
             git_status_rx: None,
             clipboard: None,
         };
-        explorer.refresh_git_status(cx.editor);
+        explorer.refresh_git_status(editor);
         Ok(explorer)
     }
 
     fn new_tree_view(root: PathBuf) -> Result<TreeView<FileInfo>> {
         let root = FileInfo::root(root);
         Ok(TreeView::build_tree(root)?.with_enter_fn(Self::toggle_current))
-    }
-
-    fn push_history(&mut self, tree_view: TreeView<FileInfo>, current_root: PathBuf) {
-        self.history.push(ExplorerHistory {
-            tree: tree_view,
-            current_root,
-        });
-        const MAX_HISTORY_SIZE: usize = 20;
-        Vec::truncate(&mut self.history, MAX_HISTORY_SIZE)
-    }
-
-    fn change_root(&mut self, root: PathBuf, editor: Option<&Editor>) -> Result<()> {
-        if self.state.current_root.eq(&root) {
-            return Ok(());
-        }
-        let tree = Self::new_tree_view(root.clone())?;
-        let old_tree = std::mem::replace(&mut self.tree, tree);
-        self.push_history(old_tree, self.state.current_root.clone());
-        self.state.current_root = root;
-        if let Some(editor) = editor {
-            self.refresh_git_status(editor);
-        }
-        Ok(())
     }
 
     fn refresh_git_status(&mut self, editor: &Editor) {
@@ -330,31 +303,18 @@ impl Explorer {
     pub fn reveal_file(&mut self, path: PathBuf) -> Result<()> {
         let current_root = &self.state.current_root.canonicalize()?;
         let current_path = &path.canonicalize()?;
-        let segments = {
-            let stripped = match current_path.strip_prefix(current_root) {
-                Ok(stripped) => Ok(stripped),
-                Err(_) => {
-                    let parent = path.parent().ok_or_else(|| {
-                        anyhow::anyhow!("Failed get parent of '{}'", current_path.to_string_lossy())
-                    })?;
-                    self.change_root(parent.into(), None)?;
-                    current_path
-                        .strip_prefix(parent.canonicalize()?)
-                        .map_err(|_| {
-                            anyhow::anyhow!(
-                                "Failed to strip prefix (parent) '{}' from '{}'",
-                                parent.to_string_lossy(),
-                                current_path.to_string_lossy()
-                            )
-                        })
-                }
-            }?;
+        let stripped = current_path.strip_prefix(current_root).map_err(|_| {
+            anyhow::anyhow!(
+                "File '{}' is outside the explorer root '{}'",
+                current_path.display(),
+                current_root.display()
+            )
+        })?;
 
-            stripped
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-        };
+        let segments: Vec<_> = stripped
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
         self.tree.reveal_item(segments)?;
         Ok(())
     }
@@ -811,25 +771,6 @@ impl Explorer {
         }
     }
 
-    fn go_to_previous_root(&mut self) {
-        if let Some(history) = self.history.pop() {
-            self.tree = history.tree;
-            self.state.current_root = history.current_root
-        }
-    }
-
-    fn change_root_to_current_folder(&mut self, editor: &Editor) -> Result<()> {
-        self.change_root(self.tree.current_item()?.path.clone(), Some(editor))
-    }
-
-    fn change_root_parent_folder(&mut self, editor: &Editor) -> Result<()> {
-        if let Some(parent) = self.state.current_root.parent() {
-            let path = parent.to_path_buf();
-            self.change_root(path, Some(editor))
-        } else {
-            Ok(())
-        }
-    }
 
     pub fn is_opened(&self) -> bool {
         self.state.open
@@ -975,9 +916,6 @@ impl Component for Explorer {
                 key!('q') | ctrl!('b') => self.close(),
                 key!('?') => self.toggle_help(),
                 key!('a') => self.new_create_file_or_folder_prompt(cx)?,
-                shift!('B') => self.change_root_parent_folder(cx.editor)?,
-                key!(']') => self.change_root_to_current_folder(cx.editor)?,
-                key!('[') => self.go_to_previous_root(),
                 key!('d') => self.new_remove_prompt()?,
                 key!('r') => self.new_rename_prompt(cx)?,
                 key!('x') => self.cut_current()?,
