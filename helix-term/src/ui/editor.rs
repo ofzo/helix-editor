@@ -8,6 +8,7 @@ use crate::{
     ui::{
         document::{render_document, LinePos, TextRenderer},
         statusline,
+        terminal::TerminalPane,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
         Completion, Explorer, ProgressSpinners,
     },
@@ -32,7 +33,7 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc, sync::mpsc};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -46,6 +47,9 @@ pub struct EditorView {
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
     pub(crate) explorer: Option<Explorer>,
+    pub(crate) bottom_terminal: Option<TerminalPane>,
+    pub(crate) float_terminal: Option<TerminalPane>,
+    pub(crate) float_terminal_prewarm: Option<mpsc::Receiver<TerminalPane>>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +74,9 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
             explorer: None,
+            bottom_terminal: None,
+            float_terminal: None,
+            float_terminal_prewarm: None,
         }
     }
 
@@ -1223,8 +1230,36 @@ impl EditorView {
         on_next_key
     }
 
+    /// Spawn a background thread to pre-create a float terminal pane.
+    /// Safe to call multiple times; does nothing if a prewarm is already in progress
+    /// or a terminal is already available.
+    pub fn start_terminal_prewarm(&mut self) {
+        if self.float_terminal.is_some() || self.float_terminal_prewarm.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.float_terminal_prewarm = Some(rx);
+        std::thread::spawn(move || {
+            if let Ok(pane) = TerminalPane::new(24, 80, 0) {
+                let _ = tx.send(pane);
+            }
+        });
+    }
+
     pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
         commands::compute_inlay_hints_for_all_views(cx.editor, cx.jobs);
+
+        self.start_terminal_prewarm();
+
+        // Check if prewarm is ready
+        if self.float_terminal.is_none() {
+            if let Some(rx) = &self.float_terminal_prewarm {
+                if let Ok(pane) = rx.try_recv() {
+                    self.float_terminal = Some(pane);
+                    self.float_terminal_prewarm = None;
+                }
+            }
+        }
 
         EventResult::Ignored(None)
     }
@@ -1494,6 +1529,18 @@ impl Component for EditorView {
         event: &Event,
         context: &mut crate::compositor::Context,
     ) -> EventResult {
+        if let Some(terminal) = self.bottom_terminal.as_ref() {
+            if terminal.has_exited() {
+                self.bottom_terminal = None;
+            }
+        }
+        if let Some(terminal) = self.bottom_terminal.as_mut() {
+            if terminal.is_focus() {
+                if let EventResult::Consumed(callback) = terminal.handle_event(event, context) {
+                    return EventResult::Consumed(callback);
+                }
+            }
+        }
         if let Some(explore) = self.explorer.as_mut() {
             if let EventResult::Consumed(callback) = explore.handle_event(event, context) {
                 return EventResult::Consumed(callback);
@@ -1699,6 +1746,18 @@ impl Component for EditorView {
             editor_area
         };
 
+        // Clip bottom for terminal panel
+        let editor_area = if let Some(terminal) = &self.bottom_terminal {
+            if terminal.is_opened() && !terminal.has_exited() {
+                // +1 for the separator line
+                editor_area.clip_bottom(terminal.panel_height() + 1)
+            } else {
+                editor_area
+            }
+        } else {
+            editor_area
+        };
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
@@ -1788,6 +1847,33 @@ impl Component for EditorView {
             }
         }
 
+        // Render bottom terminal panel
+        if let Some(terminal) = self.bottom_terminal.as_mut() {
+            if terminal.is_opened() && !terminal.has_exited() {
+                let panel_h = terminal.panel_height();
+                // Calculate terminal area: below the editor, above the commandline
+                let term_y = area.y + area.height.saturating_sub(1 + panel_h + 1);
+                let sep_y = term_y;
+                let term_area = Rect::new(area.x, sep_y + 1, area.width, panel_h);
+
+                // Draw separator line
+                let sep_style = cx.editor.theme.get("ui.statusline");
+                for x in area.x..area.x + area.width {
+                    surface.set_string(x, sep_y, "─", sep_style);
+                }
+                // Draw label on separator
+                let label = " Terminal ";
+                let label_style = cx
+                    .editor
+                    .theme
+                    .try_get("ui.statusline.separator")
+                    .unwrap_or(sep_style);
+                surface.set_string(area.x + 1, sep_y, label, label_style);
+
+                terminal.render(term_area, surface, cx);
+            }
+        }
+
         if let Some(completion) = self.completion.as_mut() {
             completion.render(area, surface, cx);
         }
@@ -1805,6 +1891,17 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if let Some(terminal) = &self.bottom_terminal {
+            if terminal.is_focus() && terminal.is_opened() && !terminal.has_exited() {
+                let panel_h = terminal.panel_height();
+                let term_y = _area.y + _area.height.saturating_sub(1 + panel_h + 1);
+                let term_area = Rect::new(_area.x, term_y + 1, _area.width, panel_h);
+                let cursor = terminal.cursor(term_area, editor);
+                if cursor.0.is_some() {
+                    return cursor;
+                }
+            }
+        }
         if let Some(explore) = &self.explorer {
             if explore.is_focus() {
                 let cursor = explore.cursor(_area, editor);

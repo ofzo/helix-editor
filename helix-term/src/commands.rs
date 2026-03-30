@@ -48,6 +48,7 @@ use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
     editor::Action,
     expansion,
+    graphics::Rect,
     icons::ICONS,
     info::Info,
     input::KeyEvent,
@@ -619,6 +620,8 @@ impl MappableCommand {
         open_or_focus_explorer, "Open or focus explorer",
         reveal_current_file, "Reveal current file in explorer",
         toggle_fold, "Toggle fold at cursor position",
+        toggle_float_terminal, "Toggle floating terminal",
+        toggle_bottom_terminal, "Toggle bottom terminal panel",
     );
 }
 
@@ -3233,6 +3236,94 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
+}
+
+fn toggle_float_terminal(cx: &mut Context) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            // If float terminal is currently displayed, remove it
+            if compositor.remove("float-terminal").is_some() {
+                return;
+            }
+
+            if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                // Take existing terminal, check prewarm, or create new one
+                let terminal = editor_view.float_terminal.take().or_else(|| {
+                    editor_view
+                        .float_terminal_prewarm
+                        .take()
+                        .and_then(|rx| rx.try_recv().ok())
+                });
+                let terminal = match terminal {
+                    Some(term) => term,
+                    None => {
+                        let config = cx.editor.config();
+                        let size = compositor.size();
+                        let w = (size.width as u32 * config.terminal_pane.float_width_percent as u32
+                            / 100) as u16;
+                        let h = (size.height as u32
+                            * config.terminal_pane.float_height_percent as u32
+                            / 100) as u16;
+                        match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
+                            Ok(term) => term,
+                            Err(err) => {
+                                cx.editor.set_error(format!("Failed to open terminal: {}", err));
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                let config = cx.editor.config();
+                let float = ui::FloatTerminal::new(terminal);
+                let wp = config.terminal_pane.float_width_percent;
+                let hp = config.terminal_pane.float_height_percent;
+                let overlay = ui::overlay::Overlay {
+                    content: float,
+                    calc_child_size: Box::new(move |rect: Rect| {
+                        let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                        let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                        let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                        let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                        Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                    }),
+                };
+                compositor.push(Box::new(overlay));
+            }
+        },
+    ));
+}
+
+fn toggle_bottom_terminal(cx: &mut Context) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            let size = compositor.size();
+            if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                match editor_view.bottom_terminal.as_mut() {
+                    Some(terminal) => {
+                        if terminal.is_focus() {
+                            terminal.unfocus();
+                        } else if terminal.is_opened() {
+                            terminal.close();
+                        } else {
+                            terminal.focus();
+                        }
+                    }
+                    None => {
+                        let config = cx.editor.config();
+                        let panel_height = config.terminal_pane.panel_height;
+                        let cols = size.width;
+                        match ui::TerminalPane::new(panel_height, cols, panel_height) {
+                            Ok(term) => editor_view.bottom_terminal = Some(term),
+                            Err(err) => {
+                                cx.editor.set_error(format!("Failed to open terminal: {}", err));
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ));
 }
 
 fn buffer_picker(cx: &mut Context) {

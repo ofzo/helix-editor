@@ -12,6 +12,8 @@ pub mod popup;
 pub mod prompt;
 mod spinner;
 mod statusline;
+pub(crate) mod terminal;
+mod terminal_float;
 mod text;
 mod text_decorations;
 
@@ -30,6 +32,8 @@ pub use picker::{Column as PickerColumn, FileLocation, Picker};
 pub use popup::Popup;
 pub use prompt::{Prompt, PromptEvent};
 pub use spinner::{ProgressSpinners, Spinner};
+pub use terminal::TerminalPane;
+pub use terminal_float::FloatTerminal;
 pub use text::Text;
 
 use helix_view::Editor;

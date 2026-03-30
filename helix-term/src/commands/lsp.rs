@@ -1437,7 +1437,7 @@ fn compute_inlay_hints_for_view(
                     };
 
                     let width = label.width();
-                    let limit = limit.get().into();
+                    let limit: usize = limit.get().try_into().unwrap();
                     if width > limit {
                         let mut floor_boundary = 0;
                         let mut acc = 0;

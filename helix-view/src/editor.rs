@@ -272,6 +272,27 @@ impl Default for ExplorerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct TerminalPaneConfig {
+    /// Height of the bottom terminal panel in lines.
+    pub panel_height: u16,
+    /// Width percentage of the floating terminal (0-100).
+    pub float_width_percent: u16,
+    /// Height percentage of the floating terminal (0-100).
+    pub float_height_percent: u16,
+}
+
+impl Default for TerminalPaneConfig {
+    fn default() -> Self {
+        Self {
+            panel_height: 15,
+            float_width_percent: 80,
+            float_height_percent: 80,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
     /// Padding to keep between the edge of the screen and the cursor when scrolling. Defaults to 5.
     pub scrolloff: usize,
@@ -367,6 +388,8 @@ pub struct Config {
     pub color_modes: bool,
     /// explore config
     pub explorer: ExplorerConfig,
+    /// Terminal pane config
+    pub terminal_pane: TerminalPaneConfig,
     pub soft_wrap: SoftWrap,
     /// Workspace specific lsp ceiling dirs
     pub workspace_lsp_roots: Vec<PathBuf>,
@@ -1060,6 +1083,7 @@ impl Default for Config {
             indent_guides: IndentGuidesConfig::default(),
             color_modes: false,
             explorer: ExplorerConfig::default(),
+            terminal_pane: TerminalPaneConfig::default(),
             soft_wrap: SoftWrap {
                 enable: Some(false),
                 ..SoftWrap::default()

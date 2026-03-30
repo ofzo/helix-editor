@@ -2742,6 +2742,124 @@ fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyh
     Ok(())
 }
 
+fn float_term(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(|editor, compositor| {
+                use crate::ui;
+
+                if compositor.remove("float-terminal").is_some() {
+                    return;
+                }
+
+                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                    let terminal = editor_view.float_terminal.take().or_else(|| {
+                        editor_view
+                            .float_terminal_prewarm
+                            .take()
+                            .and_then(|rx| rx.try_recv().ok())
+                    });
+                    let terminal = match terminal {
+                        Some(term) => term,
+                        None => {
+                            let config = editor.config();
+                            let size = compositor.size();
+                            let w = (size.width as u32
+                                * config.terminal_pane.float_width_percent as u32
+                                / 100) as u16;
+                            let h = (size.height as u32
+                                * config.terminal_pane.float_height_percent as u32
+                                / 100) as u16;
+                            match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
+                                Ok(term) => term,
+                                Err(err) => {
+                                    editor
+                                        .set_error(format!("Failed to open terminal: {}", err));
+                                    return;
+                                }
+                            }
+                        }
+                    };
+
+                    let config = editor.config();
+                    let float = ui::FloatTerminal::new(terminal);
+                    let wp = config.terminal_pane.float_width_percent;
+                    let hp = config.terminal_pane.float_height_percent;
+                    let overlay = ui::overlay::Overlay {
+                        content: float,
+                        calc_child_size: Box::new(move |rect| {
+                            use helix_view::graphics::Rect;
+                            let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                            let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                            let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                            let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                            Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                        }),
+                    };
+                    compositor.push(Box::new(overlay));
+                }
+            }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn bottom_term(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(|editor, compositor| {
+                use crate::ui;
+
+                let size = compositor.size();
+                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                    match editor_view.bottom_terminal.as_mut() {
+                        Some(terminal) => {
+                            if terminal.is_focus() {
+                                terminal.unfocus();
+                            } else if terminal.is_opened() {
+                                terminal.close();
+                            } else {
+                                terminal.focus();
+                            }
+                        }
+                        None => {
+                            let config = editor.config();
+                            let panel_height = config.terminal_pane.panel_height;
+                            let cols = size.width;
+                            match ui::TerminalPane::new(panel_height, cols, panel_height) {
+                                Ok(term) => editor_view.bottom_terminal = Some(term),
+                                Err(err) => {
+                                    editor
+                                        .set_error(format!("Failed to open terminal: {}", err));
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -3776,6 +3894,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "float-term",
+        aliases: &["ft"],
+        doc: "Toggle floating terminal.",
+        fun: float_term,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "bottom-term",
+        aliases: &["bt"],
+        doc: "Toggle bottom terminal panel.",
+        fun: bottom_term,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },
