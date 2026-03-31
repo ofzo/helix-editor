@@ -13,9 +13,11 @@ use helix_view::{
     theme::Style,
     Editor,
 };
-use helix_vcs::is_ignored;
+use helix_vcs::{is_ignored, FileChangeStatus};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::{borrow::Cow, fs::DirEntry};
 use tree::{TreeOp, TreeView, TreeViewItem};
 use tui::{
@@ -199,7 +201,9 @@ pub struct Explorer {
     #[allow(clippy::type_complexity)]
     on_next_key: Option<Box<dyn FnMut(&mut Context, &mut Self, &KeyEvent) -> EventResult>>,
     column_width: u16,
-    show_ignored: bool,  // 控制是否显示被忽略的文件
+    show_ignored: bool,
+    git_status: HashMap<PathBuf, FileChangeStatus>,
+    git_status_rx: Option<Receiver<(PathBuf, FileChangeStatus)>>,
 }
 
 impl Explorer {
@@ -207,7 +211,7 @@ impl Explorer {
         let current_root = std::env::current_dir()
             .unwrap_or_else(|_| "./".into())
             .canonicalize()?;
-        Ok(Self {
+        let mut explorer = Self {
             tree: Self::new_tree_view(current_root.clone())?,
             history: vec![],
             show_help: true,
@@ -215,8 +219,12 @@ impl Explorer {
             prompt: None,
             on_next_key: None,
             column_width: cx.editor.config().explorer.column_width as u16,
-            show_ignored: false,  // 默认隐藏被忽略的文件
-        })
+            show_ignored: false,
+            git_status: HashMap::new(),
+            git_status_rx: None,
+        };
+        explorer.refresh_git_status(cx.editor);
+        Ok(explorer)
     }
 
     fn new_tree_view(root: PathBuf) -> Result<TreeView<FileInfo>> {
@@ -233,7 +241,7 @@ impl Explorer {
         Vec::truncate(&mut self.history, MAX_HISTORY_SIZE)
     }
 
-    fn change_root(&mut self, root: PathBuf) -> Result<()> {
+    fn change_root(&mut self, root: PathBuf, editor: Option<&Editor>) -> Result<()> {
         if self.state.current_root.eq(&root) {
             return Ok(());
         }
@@ -241,7 +249,68 @@ impl Explorer {
         let old_tree = std::mem::replace(&mut self.tree, tree);
         self.push_history(old_tree, self.state.current_root.clone());
         self.state.current_root = root;
+        if let Some(editor) = editor {
+            self.refresh_git_status(editor);
+        }
         Ok(())
+    }
+
+    fn refresh_git_status(&mut self, editor: &Editor) {
+        self.git_status.clear();
+        let cwd = self.state.current_root.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        editor.diff_providers.clone().for_each_changed_file(cwd, move |change| {
+            match change {
+                Ok(change) => {
+                    let status = change.status();
+                    let path = change.path().to_path_buf();
+                    let _ = tx.send((path, status));
+                    true
+                }
+                Err(_) => true,
+            }
+        });
+        self.git_status_rx = Some(rx);
+    }
+
+    fn drain_git_status(&mut self) {
+        let root = self.state.current_root.clone();
+        if let Some(ref rx) = self.git_status_rx {
+            while let Ok((path, status)) = rx.try_recv() {
+                // Insert file status
+                self.git_status.insert(path.clone(), status);
+                // Propagate to parent directories (stop at explorer root)
+                let mut parent = path.parent().map(|p| p.to_path_buf());
+                while let Some(ref dir) = parent {
+                    if !dir.starts_with(&root) {
+                        break;
+                    }
+                    let entry = self.git_status.entry(dir.clone());
+                    use std::collections::hash_map::Entry;
+                    match entry {
+                        Entry::Occupied(mut e) => {
+                            if Self::status_priority(status) > Self::status_priority(*e.get()) {
+                                e.insert(status);
+                            }
+                        }
+                        Entry::Vacant(e) => {
+                            e.insert(status);
+                        }
+                    }
+                    parent = dir.parent().map(|p| p.to_path_buf());
+                }
+            }
+        }
+    }
+
+    fn status_priority(status: FileChangeStatus) -> u8 {
+        match status {
+            FileChangeStatus::Untracked => 1,
+            FileChangeStatus::Modified => 2,
+            FileChangeStatus::Renamed => 3,
+            FileChangeStatus::Deleted => 4,
+            FileChangeStatus::Conflict => 5,
+        }
     }
 
     pub fn reveal_file(&mut self, path: PathBuf) -> Result<()> {
@@ -254,7 +323,7 @@ impl Explorer {
                     let parent = path.parent().ok_or_else(|| {
                         anyhow::anyhow!("Failed get parent of '{}'", current_path.to_string_lossy())
                     })?;
-                    self.change_root(parent.into())?;
+                    self.change_root(parent.into(), None)?;
                     current_path
                         .strip_prefix(parent.canonicalize()?)
                         .map_err(|_| {
@@ -493,7 +562,9 @@ impl Explorer {
         surface: &mut Surface,
         cx: &mut Context,
     ) {
-        self.tree.render(area, prompt_area, surface, cx);
+        self.drain_git_status();
+        self.tree
+            .render_with_git_status(area, prompt_area, surface, cx, &self.git_status);
     }
 
     fn render_embed(
@@ -712,14 +783,14 @@ impl Explorer {
         }
     }
 
-    fn change_root_to_current_folder(&mut self) -> Result<()> {
-        self.change_root(self.tree.current_item()?.path.clone())
+    fn change_root_to_current_folder(&mut self, editor: &Editor) -> Result<()> {
+        self.change_root(self.tree.current_item()?.path.clone(), Some(editor))
     }
 
-    fn change_root_parent_folder(&mut self) -> Result<()> {
+    fn change_root_parent_folder(&mut self, editor: &Editor) -> Result<()> {
         if let Some(parent) = self.state.current_root.parent() {
             let path = parent.to_path_buf();
-            self.change_root(path)
+            self.change_root(path, Some(editor))
         } else {
             Ok(())
         }
@@ -837,8 +908,8 @@ impl Component for Explorer {
                 key!('q') | ctrl!('b') => self.close(),
                 key!('?') => self.toggle_help(),
                 key!('a') => self.new_create_file_or_folder_prompt(cx)?,
-                shift!('B') => self.change_root_parent_folder()?,
-                key!(']') => self.change_root_to_current_folder()?,
+                shift!('B') => self.change_root_parent_folder(cx.editor)?,
+                key!(']') => self.change_root_to_current_folder(cx.editor)?,
                 key!('[') => self.go_to_previous_root(),
                 key!('d') => self.new_remove_prompt()?,
                 key!('r') => self.new_rename_prompt(cx)?,

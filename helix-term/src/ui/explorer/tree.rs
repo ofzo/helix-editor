@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, path::PathBuf};
+use std::{cmp::Ordering, collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
 use helix_view::{
@@ -13,6 +13,7 @@ use crate::{
     ui::{self, Prompt},
 };
 use helix_core::movement::Direction;
+use helix_vcs::FileChangeStatus;
 use helix_view::{
     graphics::Rect,
     input::{Event, KeyEvent},
@@ -874,6 +875,7 @@ impl<T: TreeViewItem> TreeView<T> {
 struct RenderedLine<'a> {
     indent: Spans<'a>,
     content: Span<'a>,
+    suffix: Option<Span<'a>>,
     selected: bool,
     is_ancestor_of_current_item: bool,
 }
@@ -882,6 +884,7 @@ struct RenderTreeParams<'a, T> {
     prefix: Spans<'a>,
     level: usize,
     selected: usize,
+    git_status: &'a HashMap<PathBuf, FileChangeStatus>,
 }
 
 fn render_tree<'a, T: TreeViewItem>(
@@ -890,6 +893,7 @@ fn render_tree<'a, T: TreeViewItem>(
         prefix,
         level,
         selected,
+        git_status,
     }: RenderTreeParams<'a, T>,
     cx: &mut Context,
 ) -> Vec<RenderedLine<'a>> {
@@ -960,12 +964,47 @@ fn render_tree<'a, T: TreeViewItem>(
         ancestor_style
     };
 
-    let name = Span::styled(tree.item.name(), final_style);
+    let path = tree.item.path();
+    let git_status_for_path = git_status.get(&path);
+
+    let (content_style, suffix) = if let Some(status) = git_status_for_path {
+        let status_style = if is_selected {
+            final_style
+        } else {
+            let s = match status {
+                FileChangeStatus::Untracked => cx.editor.theme.get("diff.plus"),
+                FileChangeStatus::Modified => cx.editor.theme.get("diff.delta"),
+                FileChangeStatus::Conflict => cx.editor.theme.get("diff.delta.conflict"),
+                FileChangeStatus::Deleted => cx.editor.theme.get("diff.minus"),
+                FileChangeStatus::Renamed => cx.editor.theme.get("diff.delta.moved"),
+            };
+            if dimmed { s.add_modifier(helix_view::graphics::Modifier::DIM) } else { s }
+        };
+
+        let icons = ICONS.load();
+        let icon_str = match status {
+            FileChangeStatus::Untracked => icons.vcs().added(),
+            FileChangeStatus::Modified => icons.vcs().modified(),
+            FileChangeStatus::Conflict => icons.vcs().conflict(),
+            FileChangeStatus::Deleted => icons.vcs().removed(),
+            FileChangeStatus::Renamed => icons.vcs().renamed(),
+        };
+        let icon_text = icon_str
+            .filter(|s| !s.is_empty())
+            .unwrap_or(" ");
+        let suffix_span = Span::styled(icon_text.to_string(), status_style);
+        (status_style, Some(suffix_span))
+    } else {
+        (final_style, None)
+    };
+
+    let name = Span::styled(tree.item.name(), content_style);
     let head = RenderedLine {
         indent,
         selected: is_selected,
         is_ancestor_of_current_item,
         content: name,
+        suffix,
     };
 
     vec![head]
@@ -977,6 +1016,7 @@ fn render_tree<'a, T: TreeViewItem>(
                     prefix: prefix.clone(),
                     level: level + 1,
                     selected,
+                    git_status,
                 },
                 cx,
             )
@@ -992,11 +1032,23 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         surface: &mut Surface,
         cx: &mut Context,
     ) {
+        let empty = HashMap::new();
+        self.render_with_git_status(area, prompt_area, surface, cx, &empty);
+    }
+
+    pub fn render_with_git_status(
+        &mut self,
+        area: Rect,
+        prompt_area: Rect,
+        surface: &mut Surface,
+        cx: &mut Context,
+        git_status: &HashMap<PathBuf, FileChangeStatus>,
+    ) {
         if let Some((_, prompt)) = self.search_prompt.as_mut() {
             prompt.render_prompt(prompt_area, surface, cx)
         }
 
-        self.render_lines(area, cx)
+        self.render_lines(area, cx, git_status)
             .into_iter()
             .enumerate()
             .for_each(|(index, line)| {
@@ -1013,16 +1065,23 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
                 let indent_len = line.indent.width() as u16;
                 surface.set_spans(area.x, area.y, &line.indent, indent_len);
                 let x = area.x.saturating_add(indent_len);
-                surface.set_span(
-                    x,
-                    area.y,
-                    &line.content,
-                    area.width.saturating_sub(indent_len).saturating_sub(1),
-                );
+                let remaining = area.width.saturating_sub(indent_len).saturating_sub(1);
+                surface.set_span(x, area.y, &line.content, remaining);
+
+                if let Some(ref suffix) = line.suffix {
+                    let suffix_width = suffix.width() as u16;
+                    let suffix_x = area.x + area.width.saturating_sub(suffix_width).saturating_sub(1);
+                    surface.set_span(suffix_x, area.y, suffix, suffix_width);
+                }
             });
     }
 
-    fn render_lines(&mut self, area: Rect, cx: &mut Context) -> Vec<RenderedLine> {
+    fn render_lines<'a>(
+        &'a mut self,
+        area: Rect,
+        cx: &mut Context,
+        git_status: &'a HashMap<PathBuf, FileChangeStatus>,
+    ) -> Vec<RenderedLine<'a>> {
         if let Some(pre_render) = self.pre_render.take() {
             pre_render(self, area);
         }
@@ -1035,6 +1094,7 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
             prefix: Span::raw(" ").into(),
             level: 0,
             selected: self.selected,
+            git_status,
         };
 
         let lines = render_tree(params, cx);

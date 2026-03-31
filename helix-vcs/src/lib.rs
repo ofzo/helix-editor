@@ -18,7 +18,7 @@ pub use diff::{DiffHandle, Hunk};
 
 mod status;
 
-pub use status::FileChange;
+pub use status::{FileChange, FileChangeStatus};
 
 /// Check if a path is ignored by gitignore rules
 /// Returns true if the path is ignored, false otherwise
