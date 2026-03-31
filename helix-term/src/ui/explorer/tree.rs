@@ -905,29 +905,20 @@ fn render_tree<'a, T: TreeViewItem>(
                 Span::styled(" ", indicator_style)
             }
         } else {
-            Span::styled("  ", indicator_style)
+            let icons = ICONS.load();
+            let path = tree.item.path();
+            if let Some(icon) = icons.fs().from_path(&path) {
+                let icon_color = if is_selected { None } else { icon.color() };
+                if let Some(color) = icon_color {
+                    Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
+                } else {
+                    Span::raw(format!("{} ", icon.glyph()))
+                }
+            } else {
+                Span::styled("  ", indicator_style)
+            }
         };
 
-        // TODO: ICON V2
-        // let indicator = if tree.item().is_parent() {
-        //     if tree.is_opened {
-        //        Span::styled(" ", style)
-        //     } else {
-        //        Span::styled(" ", style)
-        //     }
-        // } else {
-        //     let icons = ICONS.load();
-        //     if let Some(icon) = icons.fs().mime().get(Some(&tree.item.path()), None) {
-        //         let icon_color = if is_selected { None } else { icon.color() };
-        //         if let Some(color) = icon_color {
-        //             Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
-        //         } else {
-        //             Span::raw(format!("{} ", icon.glyph()))
-        //         }
-        //     } else {
-        //         Span::styled("  ", style)
-        //     }
-        // };
 
         let editor_config = cx.editor.config.load();
 
