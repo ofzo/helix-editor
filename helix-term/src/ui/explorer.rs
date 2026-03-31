@@ -294,9 +294,13 @@ impl Explorer {
         self.state.focus = false;
     }
 
-    fn close(&mut self) {
+    pub fn close(&mut self) {
         self.state.focus = false;
         self.state.open = false;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.state.open
     }
 
     pub fn is_focus(&self) -> bool {
@@ -447,6 +451,20 @@ impl Explorer {
             cx.editor.set_error(format!("{err}"));
             TreeOp::Noop
         })
+    }
+
+    fn open_file_picker(&mut self, cx: &mut Context) {
+        let root = self.state.current_root.clone();
+        self.state.focus = false;
+        cx.jobs.callback(async move {
+            let call = crate::job::Callback::EditorCompositor(Box::new(
+                move |editor: &mut Editor, compositor: &mut crate::compositor::Compositor| {
+                    let picker = ui::file_picker(editor, root);
+                    compositor.push(Box::new(ui::overlay::overlaid(picker)));
+                },
+            ));
+            Ok(call)
+        });
     }
 
     /// 在右侧分屏打开当前选中的文件
@@ -816,7 +834,7 @@ impl Component for Explorer {
         (|| -> Result<()> {
             match key_event {
                 key!(Esc) => self.unfocus(),
-                key!('q') => self.close(),
+                key!('q') | ctrl!('b') => self.close(),
                 key!('?') => self.toggle_help(),
                 key!('a') => self.new_create_file_or_folder_prompt(cx)?,
                 shift!('B') => self.change_root_parent_folder()?,
@@ -826,8 +844,18 @@ impl Component for Explorer {
                 key!('r') => self.new_rename_prompt(cx)?,
                 key!('-') | key!('_') => self.decrease_size(),
                 key!('+') | key!('=') => self.increase_size(),
+                shift!('C') => self.tree.collapse_to_parent()?,
                 key!('.') => self.toggle_show_ignored(),
                 key!('s') => self.open_selected_split(cx)?,
+                key!(' ') => {
+                    self.on_next_key = Some(Box::new(|cx, explorer, key_event| {
+                        match key_event {
+                            key!('f') => explorer.open_file_picker(cx),
+                            _ => {}
+                        }
+                        EventResult::Consumed(None)
+                    }));
+                }
                 _ => {
                     self.tree
                         .handle_key_event(&Event::Key(*key_event), cx, &mut self.state);

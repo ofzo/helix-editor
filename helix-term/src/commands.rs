@@ -3114,6 +3114,7 @@ fn open_or_focus_explorer(cx: &mut Context) {
         |compositor: &mut Compositor, cx: &mut compositor::Context| {
             if let Some(editor) = compositor.find::<ui::EditorView>() {
                 match editor.explorer.as_mut() {
+                    Some(explore) if explore.is_open() => explore.close(),
                     Some(explore) => explore.focus(),
                     None => match ui::Explorer::new(cx) {
                         Ok(explore) => editor.explorer = Some(explore),

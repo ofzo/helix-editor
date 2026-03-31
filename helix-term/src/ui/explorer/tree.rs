@@ -454,6 +454,29 @@ impl<T: TreeViewItem> TreeView<T> {
         Ok(())
     }
 
+    pub fn collapse_to_parent(&mut self) -> Result<()> {
+        let current = self.current()?;
+        // If current is an open directory, collapse it in place.
+        if current.item.is_parent() && current.is_opened {
+            self.current_mut()?.close();
+            self.regenerate_index();
+            return Ok(());
+        }
+        // Otherwise, move to the parent and collapse it (skip root at index 0).
+        if let Some(parent) = self.current_parent()? {
+            let index = parent.index;
+            if index == 0 {
+                // Already at root, just move there.
+                self.set_selected(0);
+                return Ok(());
+            }
+            self.set_selected(index);
+            self.current_mut()?.close();
+            self.regenerate_index();
+        }
+        Ok(())
+    }
+
     fn move_to_children(&mut self) -> Result<()> {
         let params = self.params.clone();
         let current = self.current_mut()?;
