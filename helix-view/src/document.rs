@@ -157,6 +157,7 @@ pub struct Document {
 
     path: Option<PathBuf>,
     relative_path: OnceCell<Option<PathBuf>>,
+    remote_url: Option<String>,
     encoding: &'static encoding::Encoding,
     has_bom: bool,
 
@@ -705,6 +706,7 @@ impl Document {
             active_snippet: None,
             path: None,
             relative_path: OnceCell::new(),
+            remote_url: None,
             encoding,
             has_bom,
             text,
@@ -2084,6 +2086,14 @@ impl Document {
         self.path.as_ref()
     }
 
+    pub fn remote_url(&self) -> Option<&str> {
+        self.remote_url.as_deref()
+    }
+
+    pub fn set_remote_url(&mut self, url: Option<String>) {
+        self.remote_url = url;
+    }
+
     /// File path as a URL.
     pub fn url(&self) -> Option<Url> {
         Url::from_file_path(self.path()?).ok()
@@ -2141,6 +2151,9 @@ impl Document {
     }
 
     pub fn display_name(&self) -> Cow<'_, str> {
+        if let Some(ref url) = self.remote_url {
+            return Cow::Borrowed(url.as_str());
+        }
         self.relative_path()
             .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
     }

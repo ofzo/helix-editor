@@ -193,6 +193,11 @@ impl Application {
                         // NOTE: this isn't necessarily true anymore. If
                         // `--vsplit` or `--hsplit` are used, the file which is
                         // opened last is focused on.
+                        // If this file was downloaded from an scp:// URL, tag the document.
+                        if let Some(remote_url) = args.remote_urls.get(&file) {
+                            let doc = doc_mut!(editor, &doc_id);
+                            doc.set_remote_url(Some(remote_url.clone()));
+                        }
                         let view_id = editor.tree.focus;
                         let doc = doc_mut!(editor, &doc_id);
                         let selection = pos
@@ -618,11 +623,35 @@ impl Application {
 
         self.editor
             .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
-        // TODO: fix being overwritten by lsp
-        self.editor.set_status(format!(
-            "'{}' written, {lines}L {size}",
-            get_relative_path(&doc_save_event.path).to_string_lossy(),
-        ));
+
+        // If the document has a remote URL, upload after save.
+        let remote_url = self
+            .editor
+            .document(doc_save_event.doc_id)
+            .and_then(|doc| doc.remote_url().map(|s| s.to_string()));
+
+        if let Some(remote_url) = remote_url {
+            let local_path = doc_save_event.path.clone();
+            self.editor.set_status(format!(
+                "'{}' written, {lines}L {size} — uploading to {remote_url}…",
+                get_relative_path(&doc_save_event.path).to_string_lossy(),
+            ));
+            self.jobs.callback(async move {
+                let parsed = helix_view::scp::ScpUrl::parse(&remote_url)
+                    .ok_or_else(|| anyhow::anyhow!("invalid scp URL: {remote_url}"))?;
+                helix_view::scp::upload(&local_path, &parsed).await?;
+                let url = remote_url.clone();
+                Ok(crate::job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+                    editor.set_status(format!("uploaded to {url}"));
+                })))
+            });
+        } else {
+            // TODO: fix being overwritten by lsp
+            self.editor.set_status(format!(
+                "'{}' written, {lines}L {size}",
+                get_relative_path(&doc_save_event.path).to_string_lossy(),
+            ));
+        }
     }
 
     #[inline(always)]

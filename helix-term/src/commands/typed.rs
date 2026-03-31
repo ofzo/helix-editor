@@ -107,6 +107,20 @@ fn open(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 
 fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow::Result<()> {
     for arg in args {
+        if helix_view::scp::is_scp_url(&arg) {
+            let parsed = helix_view::scp::ScpUrl::parse(&arg)
+                .ok_or_else(|| anyhow::anyhow!("invalid scp URL: {arg}"))?;
+            let url_string = parsed.to_url_string();
+            let local_path = helix_view::scp::download(&parsed)?;
+            let _ = cx.editor.open(&local_path, action)?;
+            let (view, doc) = current!(cx.editor);
+            doc.set_remote_url(Some(url_string));
+            let pos =
+                Selection::point(pos_at_coords(doc.text().slice(..), Position::default(), true));
+            doc.set_selection(view.id, pos);
+            align_view(doc, view, Align::Center);
+            continue;
+        }
         let (path, pos) = crate::args::parse_file(&arg);
         let path = helix_stdx::path::expand_tilde(path);
         // If the path is a directory, open a file picker on that directory and update the status

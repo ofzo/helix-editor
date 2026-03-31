@@ -1,7 +1,9 @@
 use anyhow::Result;
 use helix_core::Position;
+use helix_view::scp;
 use helix_view::tree::Layout;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -19,6 +21,8 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Vec<Position>>,
     pub working_directory: Option<PathBuf>,
+    /// Maps temp file paths to their original `scp://` URLs.
+    pub remote_urls: HashMap<PathBuf, String>,
 }
 
 impl Args {
@@ -26,6 +30,8 @@ impl Args {
         let mut args = Args::default();
         let mut argv = std::env::args().peekable();
         let mut line_number = 0;
+        // Collect scp:// URLs separately to avoid borrow conflicts with the closure.
+        let mut scp_args: Vec<String> = Vec::new();
 
         let mut insert_file_with_position = |file_with_position: &str| {
             let (filename, position) = parse_file(file_with_position);
@@ -108,13 +114,35 @@ impl Args {
                         _ => insert_file_with_position(arg),
                     };
                 }
+                arg if scp::is_scp_url(arg) => {
+                    scp_args.push(arg.to_string());
+                }
                 arg => insert_file_with_position(arg),
             }
         }
 
         // push the remaining args, if any to the files
         for arg in argv {
-            insert_file_with_position(&arg);
+            if scp::is_scp_url(&arg) {
+                scp_args.push(arg);
+            } else {
+                insert_file_with_position(&arg);
+            }
+        }
+
+        // Drop the closure so we can mutably borrow args.files and args.remote_urls.
+        drop(insert_file_with_position);
+
+        // Process scp:// URLs: download each and register the temp path.
+        for url_str in scp_args {
+            let parsed = scp::ScpUrl::parse(&url_str)
+                .ok_or_else(|| anyhow::anyhow!("invalid scp URL: {url_str}"))?;
+            let url_string = parsed.to_url_string();
+            let temp_path = scp::download(&parsed)?;
+            args.remote_urls.insert(temp_path.clone(), url_string);
+            args.files
+                .entry(temp_path)
+                .or_insert_with(|| vec![Position::default()]);
         }
 
         if line_number != 0 {
