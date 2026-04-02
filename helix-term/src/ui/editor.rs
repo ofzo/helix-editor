@@ -588,11 +588,11 @@ impl EditorView {
             Mode::Select => theme.find_highlight_exact("ui.selection.primary.select"),
             Mode::Insert => theme.find_highlight_exact("ui.selection.primary.insert"),
         }
-        .unwrap_or(
+        .unwrap_or_else(|| {
             theme
                 .find_highlight_exact("ui.selection.primary")
-                .expect("could not find `ui.selection.primary` scope in the theme!"),
-        );
+                .unwrap_or(selection_scope)
+        });
 
         let base_cursor_scope = theme
             .find_highlight_exact("ui.cursor")
@@ -1861,14 +1861,6 @@ impl Component for EditorView {
                 for x in area.x..area.x + area.width {
                     surface.set_string(x, sep_y, "─", sep_style);
                 }
-                // Draw label on separator
-                let label = format!(" {} ", terminal.title());
-                let label_style = cx
-                    .editor
-                    .theme
-                    .try_get("ui.statusline.separator")
-                    .unwrap_or(sep_style);
-                surface.set_string(area.x + 1, sep_y, &label, label_style);
 
                 terminal.render(term_area, surface, cx);
             }
