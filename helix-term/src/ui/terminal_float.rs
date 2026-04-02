@@ -10,11 +10,19 @@ use super::terminal::TerminalPane;
 /// A floating terminal overlay displayed centered on screen.
 pub struct FloatTerminal {
     pub terminal: TerminalPane,
+    id_str: &'static str,
 }
 
 impl FloatTerminal {
     pub fn new(terminal: TerminalPane) -> Self {
-        Self { terminal }
+        Self {
+            terminal,
+            id_str: "float-terminal",
+        }
+    }
+
+    pub fn new_with_id(terminal: TerminalPane, id_str: &'static str) -> Self {
+        Self { terminal, id_str }
     }
 }
 
@@ -22,13 +30,65 @@ impl Component for FloatTerminal {
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         // Auto-close when the shell process exits, and pre-warm a new terminal
         if self.terminal.has_exited() {
+            let is_custom_cmd = self.id_str == "float-terminal-cmd";
+            let id_str = self.id_str;
             return EventResult::Consumed(Some(Box::new(
-                |compositor: &mut crate::compositor::Compositor, _cx: &mut Context| {
-                    compositor.remove("float-terminal");
+                move |compositor: &mut crate::compositor::Compositor, cx: &mut Context| {
+                    compositor.remove(id_str);
                     if let Some(editor_view) =
                         compositor.find::<crate::ui::EditorView>()
                     {
                         editor_view.start_terminal_prewarm();
+                    }
+
+                    if is_custom_cmd {
+                        // Reload all open documents from disk
+                        let scrolloff = cx.editor.config().scrolloff;
+                        let view_id = view!(cx.editor).id;
+                        let docs_view_ids: Vec<(
+                            helix_view::DocumentId,
+                            Vec<helix_view::ViewId>,
+                        )> = cx
+                            .editor
+                            .documents_mut()
+                            .map(|doc| {
+                                let mut view_ids: Vec<_> =
+                                    doc.selections().keys().cloned().collect();
+                                if view_ids.is_empty() {
+                                    doc.ensure_view_init(view_id);
+                                    view_ids.push(view_id);
+                                }
+                                (doc.id(), view_ids)
+                            })
+                            .collect();
+
+                        for (doc_id, view_ids) in docs_view_ids {
+                            let doc = doc_mut!(cx.editor, &doc_id);
+                            let view = view_mut!(cx.editor, view_ids[0]);
+                            view.sync_changes(doc);
+                            if let Err(error) =
+                                doc.reload(view, &cx.editor.diff_providers)
+                            {
+                                cx.editor
+                                    .set_error(format!("{}", error));
+                                continue;
+                            }
+                            if let Some(path) = doc.path() {
+                                cx.editor
+                                    .language_servers
+                                    .file_event_handler
+                                    .file_changed(path.clone());
+                            }
+                            for view_id in view_ids {
+                                let view = view_mut!(cx.editor, view_id);
+                                if view.doc.eq(&doc_id) {
+                                    let doc = doc_mut!(cx.editor, &doc_id);
+                                    view.ensure_cursor_in_view(doc, scrolloff);
+                                }
+                            }
+                        }
+                        cx.editor
+                            .set_status("Command exited. All buffers reloaded.");
                     }
                 },
             )));
@@ -37,13 +97,14 @@ impl Component for FloatTerminal {
         // Check for Escape key to close the float
         if let Event::Key(key) = event {
             use helix_view::keyboard::KeyCode;
+            let id_str = self.id_str;
             if key.code == KeyCode::Esc
                 && key.modifiers.is_empty()
                 && !self.terminal.is_focus()
             {
                 return EventResult::Consumed(Some(Box::new(
-                    |compositor: &mut crate::compositor::Compositor, _cx: &mut Context| {
-                        compositor.remove("float-terminal");
+                    move |compositor: &mut crate::compositor::Compositor, _cx: &mut Context| {
+                        compositor.remove(id_str);
                     },
                 )));
             }
@@ -130,6 +191,6 @@ impl Component for FloatTerminal {
     }
 
     fn id(&self) -> Option<&'static str> {
-        Some("float-terminal")
+        Some(self.id_str)
     }
 }

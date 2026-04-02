@@ -2758,68 +2758,125 @@ fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyh
 
 fn float_term(
     cx: &mut compositor::Context,
-    _args: Args,
+    args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
 
+    let cmd_str = args.join(" ");
+    let has_custom_cmd = !cmd_str.is_empty();
+
     let callback = async move {
         let call: crate::job::Callback =
-            crate::job::Callback::EditorCompositor(Box::new(|editor, compositor| {
+            crate::job::Callback::EditorCompositor(Box::new(move |editor, compositor| {
                 use crate::ui;
 
-                if compositor.remove("float-terminal").is_some() {
+                let id_str = if has_custom_cmd {
+                    "float-terminal-cmd"
+                } else {
+                    "float-terminal"
+                };
+
+                if compositor.remove(id_str).is_some() {
                     return;
                 }
 
-                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
-                    let terminal = editor_view.float_terminal.take().or_else(|| {
-                        editor_view
-                            .float_terminal_prewarm
-                            .take()
-                            .and_then(|rx| rx.try_recv().ok())
-                    });
-                    let terminal = match terminal {
-                        Some(term) => term,
-                        None => {
-                            let config = editor.config();
-                            let size = compositor.size();
-                            let w = (size.width as u32
-                                * config.terminal_pane.float_width_percent as u32
-                                / 100) as u16;
-                            let h = (size.height as u32
-                                * config.terminal_pane.float_height_percent as u32
-                                / 100) as u16;
-                            match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
-                                Ok(term) => term,
-                                Err(err) => {
-                                    editor
-                                        .set_error(format!("Failed to open terminal: {}", err));
-                                    return;
-                                }
-                            }
-                        }
-                    };
+                let config = editor.config();
+                let size = compositor.size();
+                let w = (size.width as u32
+                    * config.terminal_pane.float_width_percent as u32
+                    / 100) as u16;
+                let h = (size.height as u32
+                    * config.terminal_pane.float_height_percent as u32
+                    / 100) as u16;
 
-                    let config = editor.config();
-                    let float = ui::FloatTerminal::new(terminal);
-                    let wp = config.terminal_pane.float_width_percent;
-                    let hp = config.terminal_pane.float_height_percent;
-                    let overlay = ui::overlay::Overlay {
-                        content: float,
-                        calc_child_size: Box::new(move |rect| {
-                            use helix_view::graphics::Rect;
-                            let w = (rect.width as u32 * wp as u32 / 100) as u16;
-                            let h = (rect.height as u32 * hp as u32 / 100) as u16;
-                            let x = rect.x + (rect.width.saturating_sub(w)) / 2;
-                            let y = rect.y + (rect.height.saturating_sub(h)) / 2;
-                            Rect::new(x, y, w.min(rect.width), h.min(rect.height))
-                        }),
+                let terminal = if has_custom_cmd {
+                    // Check if the command exists in PATH before launching
+                    let first_token = cmd_str.split_whitespace().next().unwrap_or("");
+                    let cmd_exists = if first_token.contains('/') {
+                        std::path::Path::new(first_token).exists()
+                    } else {
+                        std::env::var_os("PATH")
+                            .map(|paths| {
+                                std::env::split_paths(&paths)
+                                    .any(|dir| dir.join(first_token).is_file())
+                            })
+                            .unwrap_or(false)
                     };
-                    compositor.push(Box::new(overlay));
-                }
+                    if !cmd_exists {
+                        return;
+                    }
+
+                    let shell = editor.config().shell.clone();
+                    let shell_cmd = shell.first().cloned().unwrap_or_else(|| "sh".to_string());
+                    let mut shell_args: Vec<String> = shell[1..].to_vec();
+                    shell_args.push(cmd_str.clone());
+                    let title = cmd_str.clone();
+                    match ui::TerminalPane::new_with_cmd(
+                        h.max(2),
+                        w.max(2),
+                        0,
+                        shell_cmd,
+                        shell_args,
+                        title,
+                    ) {
+                        Ok(term) => term,
+                        Err(_) => return,
+                    }
+                } else {
+                    // Default shell — try prewarmed terminal first
+                    if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                        let prewarmed = editor_view.float_terminal.take().or_else(|| {
+                            editor_view
+                                .float_terminal_prewarm
+                                .take()
+                                .and_then(|rx| rx.try_recv().ok())
+                        });
+                        if let Some(term) = prewarmed {
+                            let float = ui::FloatTerminal::new(term);
+                            let wp = config.terminal_pane.float_width_percent;
+                            let hp = config.terminal_pane.float_height_percent;
+                            let overlay = ui::overlay::Overlay {
+                                content: float,
+                                calc_child_size: Box::new(move |rect| {
+                                    use helix_view::graphics::Rect;
+                                    let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                                    let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                                    let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                                    let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                                    Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                                }),
+                            };
+                            compositor.push(Box::new(overlay));
+                            return;
+                        }
+                    }
+                    match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
+                        Ok(term) => term,
+                        Err(err) => {
+                            editor.set_error(format!("Failed to open terminal: {}", err));
+                            return;
+                        }
+                    }
+                };
+
+                let float = ui::FloatTerminal::new_with_id(terminal, id_str);
+                let wp = config.terminal_pane.float_width_percent;
+                let hp = config.terminal_pane.float_height_percent;
+                let overlay = ui::overlay::Overlay {
+                    content: float,
+                    calc_child_size: Box::new(move |rect| {
+                        use helix_view::graphics::Rect;
+                        let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                        let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                        let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                        let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                        Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                    }),
+                };
+                compositor.push(Box::new(overlay));
             }));
         Ok(call)
     };
@@ -3914,11 +3971,11 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "float-term",
         aliases: &["ft"],
-        doc: "Toggle floating terminal.",
+        doc: "Toggle floating terminal. Optionally run a command: :float-term <cmd> [args...]",
         fun: float_term,
         completer: CommandCompleter::none(),
         signature: Signature {
-            positionals: (0, Some(0)),
+            positionals: (0, None),
             ..Signature::DEFAULT
         },
     },

@@ -100,7 +100,21 @@ pub struct TerminalPane {
 impl TerminalPane {
     pub fn new(rows: u16, cols: u16, panel_height: u16) -> anyhow::Result<Self> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let title = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "Terminal".to_string());
+        Self::new_with_cmd(rows, cols, panel_height, shell, vec![], title)
+    }
 
+    /// Create a terminal pane running a custom command.
+    pub fn new_with_cmd(
+        rows: u16,
+        cols: u16,
+        panel_height: u16,
+        cmd: String,
+        args: Vec<String>,
+        title: String,
+    ) -> anyhow::Result<Self> {
         let exited = Arc::new(AtomicBool::new(false));
         let event_proxy = EventProxy {
             exited: Arc::clone(&exited),
@@ -112,8 +126,8 @@ impl TerminalPane {
         let term = Arc::new(FairMutex::new(term));
 
         let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(shell, vec![])),
-            working_directory: None,
+            shell: Some(tty::Shell::new(cmd, args)),
+            working_directory: Some(helix_stdx::env::current_working_dir()),
             drain_on_exit: false,
             env: HashMap::new(),
         };
@@ -129,10 +143,6 @@ impl TerminalPane {
         let event_loop = EventLoop::new(Arc::clone(&term), event_proxy, pty, false, false)?;
         let sender = event_loop.channel();
         event_loop.spawn();
-
-        let title = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "Terminal".to_string());
 
         Ok(Self {
             term,
