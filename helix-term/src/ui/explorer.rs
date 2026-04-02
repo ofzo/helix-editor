@@ -164,6 +164,18 @@ enum PromptAction {
     RenameFile,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipboardOp {
+    Cut,
+    Copy,
+}
+
+#[derive(Clone, Debug)]
+struct ExplorerClipboard {
+    path: PathBuf,
+    op: ClipboardOp,
+}
+
 #[derive(Clone, Debug, Default)]
 struct State {
     focus: bool,
@@ -204,6 +216,7 @@ pub struct Explorer {
     show_ignored: bool,
     git_status: HashMap<PathBuf, FileChangeStatus>,
     git_status_rx: Option<Receiver<(PathBuf, FileChangeStatus)>>,
+    clipboard: Option<ExplorerClipboard>,
 }
 
 impl Explorer {
@@ -222,6 +235,7 @@ impl Explorer {
             show_ignored: false,
             git_status: HashMap::new(),
             git_status_rx: None,
+            clipboard: None,
         };
         explorer.refresh_git_status(cx.editor);
         Ok(explorer)
@@ -361,6 +375,7 @@ impl Explorer {
 
     fn unfocus(&mut self) {
         self.state.focus = false;
+        self.clipboard = None;
     }
 
     pub fn close(&mut self) {
@@ -410,6 +425,56 @@ impl Explorer {
         }
     }
 
+    fn cut_current(&mut self) -> Result<()> {
+        let item = self.tree.current()?.item();
+        ensure!(item.file_type != FileType::Root, "Cannot cut root");
+        self.clipboard = Some(ExplorerClipboard {
+            path: item.path.clone(),
+            op: ClipboardOp::Cut,
+        });
+        Ok(())
+    }
+
+    fn copy_current(&mut self) -> Result<()> {
+        let item = self.tree.current()?.item();
+        ensure!(item.file_type != FileType::Root, "Cannot copy root");
+        self.clipboard = Some(ExplorerClipboard {
+            path: item.path.clone(),
+            op: ClipboardOp::Copy,
+        });
+        Ok(())
+    }
+
+    fn paste(&mut self, cx: &mut Context) -> Result<()> {
+        let clipboard = self.clipboard.take().ok_or_else(|| {
+            anyhow::anyhow!("Nothing in clipboard")
+        })?;
+        ensure!(clipboard.path.exists(), "Source no longer exists: {}", clipboard.path.display());
+        let dest_folder = self.nearest_folder()?;
+        let file_name = clipboard.path.file_name().ok_or_else(|| {
+            anyhow::anyhow!("Cannot get file name from clipboard path")
+        })?;
+        let dest = dest_folder.join(file_name);
+        ensure!(!dest.exists(), "Destination already exists: {}", dest.display());
+
+        match clipboard.op {
+            ClipboardOp::Cut => {
+                close_documents(clipboard.path.clone(), cx)?;
+                std::fs::rename(&clipboard.path, &dest)?;
+            }
+            ClipboardOp::Copy => {
+                if clipboard.path.is_dir() {
+                    copy_dir_all(&clipboard.path, &dest)?;
+                } else {
+                    std::fs::copy(&clipboard.path, &dest)?;
+                }
+            }
+        }
+
+        self.tree.refresh()?;
+        self.reveal_file(dest)
+    }
+
     fn new_remove_prompt(&mut self) -> Result<()> {
         let item = self.tree.current()?.item();
         match item.file_type {
@@ -421,6 +486,9 @@ impl Explorer {
 
     fn new_rename_prompt(&mut self, cx: &mut Context) -> Result<()> {
         let path = self.tree.current_item()?.path.clone();
+        let rel_path = path
+            .strip_prefix(&self.state.current_root)
+            .unwrap_or(&path);
         self.prompt = Some((
             PromptAction::RenameFile,
             Prompt::new(
@@ -429,7 +497,7 @@ impl Explorer {
                 ui::completers::none,
                 |_, _, _| {},
             )
-            .with_line(path.to_string_lossy().to_string(), cx.editor),
+            .with_line(rel_path.to_string_lossy().to_string(), cx.editor),
         ));
         Ok(())
     }
@@ -563,8 +631,15 @@ impl Explorer {
         cx: &mut Context,
     ) {
         self.drain_git_status();
+        let clipboard_info = self.clipboard.as_ref().map(|cb| {
+            let label = match cb.op {
+                ClipboardOp::Cut => "cut",
+                ClipboardOp::Copy => "copy",
+            };
+            (cb.path.as_path(), label)
+        });
         self.tree
-            .render_with_git_status(area, prompt_area, surface, cx, &self.git_status);
+            .render_with_git_status(area, prompt_area, surface, cx, &self.git_status, clipboard_info);
     }
 
     fn render_embed(
@@ -582,8 +657,6 @@ impl Explorer {
         self.state.area_width = area.width;
 
         let commandline = 1;
-        let statusline = 1;
-
         let side_area = match position {
             ExplorerPosition::Left => Rect { width, ..area },
             ExplorerPosition::Right => Rect {
@@ -608,16 +681,8 @@ impl Explorer {
         };
 
         let list_area =
-            render_block(side_area, surface, border, split_style).clip_bottom(statusline);
+            render_block(side_area, surface, border, split_style);
 
-        let status_area = match position {
-            ExplorerPosition::Left => side_area.clip_right(1),
-            ExplorerPosition::Right => side_area.clip_left(1),
-        }
-        .clip_top(list_area.height)
-        .with_height(statusline);
-
-        self.render_statusline(status_area, surface, cx);
         self.render_tree(list_area, prompt_area, surface, cx);
 
         if self.is_focus() && self.show_help {
@@ -633,62 +698,32 @@ impl Explorer {
         }
     }
 
-    fn render_statusline(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        let style = if self.is_focus() {
-            cx.editor.theme.get("ui.statusline.explorer")
-        } else {
-            cx.editor.theme.get("ui.statusline.inactive.explorer")
-        };
-
-        surface.clear_with(area, style);
-
-        let status_text = if self.is_focus() {
-            if self.tree.prompt().is_none() {
-                if self.show_ignored {
-                    " EXPLORER [all]: Press ? for help"
-                } else {
-                    " EXPLORER: Press ? for help"
-                }
-            } else {
-                "Search:"
-            }
-        } else {
-            if self.show_ignored {
-                " EXPLORER [all]"
-            } else {
-                " EXPLORER"
-            }
-        };
-
-        surface.set_stringn(
-            area.x,
-            area.y,
-            status_text,
-            area.width.into(),
-            style,
-        );
-    }
-
     fn render_help(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         Info::new(
             "Explorer",
             &[
-                ("?", "Toggle help"),
+                ("o, Enter", "Open/Close"),
+                ("j/k", "Down/Up"),
+                ("h/l", "Parent/Expand"),
+                ("/", "Search"),
+                ("n/N", "Next/Prev match"),
                 ("a", "Add file/folder"),
-                ("r", "Rename file/folder"),
-                ("d", "Delete file"),
+                ("r", "Rename"),
+                ("d", "Delete"),
+                ("x", "Cut"),
+                ("c", "Copy"),
+                ("p", "Paste"),
                 ("s", "Open in split"),
-                ("B", "Change root to parent folder"),
-                ("]", "Change root to current folder"),
+                ("R", "Refresh"),
+                (".", "Toggle ignored"),
+                ("C", "Collapse to parent"),
+                ("B", "Change root to parent"),
+                ("]", "Change root to current"),
                 ("[", "Go to previous root"),
-                ("+, =", "Increase size"),
-                ("-, _", "Decrease size"),
-                (".", "Toggle ignored files"),
+                ("+/-", "Resize"),
                 ("q", "Close"),
-            ]
-            .into_iter()
-            .chain(tree::tree_view_help())
-            .collect::<Vec<_>>(),
+                ("?", "Toggle help"),
+            ],
         )
         .render(area, surface, cx)
     }
@@ -818,7 +853,17 @@ impl Explorer {
 
     fn rename_current(&mut self, line: &String) -> Result<()> {
         let item = self.tree.current_item()?;
-        let path = PathBuf::from(line);
+        let rel_path = PathBuf::from(line);
+        ensure!(
+            rel_path.is_relative(),
+            "Path must be relative to the working directory"
+        );
+        let path = self.state.current_root.join(&rel_path);
+        let path = helix_stdx::path::normalize(path);
+        ensure!(
+            path.starts_with(&self.state.current_root),
+            "Cannot rename outside the working directory"
+        );
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -856,6 +901,21 @@ fn close_documents(current_item_path: PathBuf, cx: &mut Context) -> Result<()> {
 
     for id in ids {
         cx.editor.close_document(id, true)?;
+    }
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
     }
     Ok(())
 }
@@ -902,9 +962,16 @@ impl Component for Explorer {
             return EventResult::Consumed(c);
         }
 
+        if let key!(':') = key_event {
+            return EventResult::Ignored(None);
+        }
+
         (|| -> Result<()> {
             match key_event {
-                key!(Esc) => self.unfocus(),
+                key!(Esc) => {
+                    self.clipboard = None;
+                    self.unfocus();
+                }
                 key!('q') | ctrl!('b') => self.close(),
                 key!('?') => self.toggle_help(),
                 key!('a') => self.new_create_file_or_folder_prompt(cx)?,
@@ -913,6 +980,9 @@ impl Component for Explorer {
                 key!('[') => self.go_to_previous_root(),
                 key!('d') => self.new_remove_prompt()?,
                 key!('r') => self.new_rename_prompt(cx)?,
+                key!('x') => self.cut_current()?,
+                key!('c') => self.copy_current()?,
+                key!('p') => self.paste(cx)?,
                 key!('-') | key!('_') => self.decrease_size(),
                 key!('+') | key!('=') => self.increase_size(),
                 shift!('C') => self.tree.collapse_to_parent()?,

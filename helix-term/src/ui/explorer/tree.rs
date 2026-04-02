@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashMap, path::PathBuf};
+use std::{cmp::Ordering, collections::HashMap, path::{Path, PathBuf}};
 
 use anyhow::Result;
 use helix_view::{
@@ -885,6 +885,7 @@ struct RenderTreeParams<'a, T> {
     level: usize,
     selected: usize,
     git_status: &'a HashMap<PathBuf, FileChangeStatus>,
+    clipboard: Option<(&'a Path, &'a str)>,
 }
 
 fn render_tree<'a, T: TreeViewItem>(
@@ -894,11 +895,15 @@ fn render_tree<'a, T: TreeViewItem>(
         level,
         selected,
         git_status,
+        clipboard,
     }: RenderTreeParams<'a, T>,
     cx: &mut Context,
 ) -> Vec<RenderedLine<'a>> {
     let is_selected = selected == tree.index;
     let is_ancestor_of_current_item = !is_selected && tree.get(selected).is_some();
+    let is_clipped = clipboard
+        .as_ref()
+        .map_or(false, |(path, _)| tree.item.path() == **path);
 
     let style = if is_selected {
         cx.editor.theme.get("ui.menu.selected")
@@ -998,10 +1003,21 @@ fn render_tree<'a, T: TreeViewItem>(
         (final_style, None)
     };
 
+    // Override style and suffix for clipboard-marked items
+    let (content_style, suffix) = if is_clipped {
+        let clip_style = cx.editor.theme.get("ui.menu.selected");
+        let label = clipboard.as_ref().map(|(_, l)| *l).unwrap_or("");
+        let dim_style = cx.editor.theme.get("ui.text.inactive");
+        let clip_suffix = Span::styled(format!(" {label}"), dim_style);
+        (clip_style, Some(clip_suffix))
+    } else {
+        (content_style, suffix)
+    };
+
     let name = Span::styled(tree.item.name(), content_style);
     let head = RenderedLine {
         indent,
-        selected: is_selected,
+        selected: is_selected || is_clipped,
         is_ancestor_of_current_item,
         content: name,
         suffix,
@@ -1017,6 +1033,7 @@ fn render_tree<'a, T: TreeViewItem>(
                     level: level + 1,
                     selected,
                     git_status,
+                    clipboard,
                 },
                 cx,
             )
@@ -1033,7 +1050,7 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         cx: &mut Context,
     ) {
         let empty = HashMap::new();
-        self.render_with_git_status(area, prompt_area, surface, cx, &empty);
+        self.render_with_git_status(area, prompt_area, surface, cx, &empty, None);
     }
 
     pub fn render_with_git_status(
@@ -1043,12 +1060,13 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         surface: &mut Surface,
         cx: &mut Context,
         git_status: &HashMap<PathBuf, FileChangeStatus>,
+        clipboard: Option<(&Path, &str)>,
     ) {
         if let Some((_, prompt)) = self.search_prompt.as_mut() {
             prompt.render_prompt(prompt_area, surface, cx)
         }
 
-        self.render_lines(area, cx, git_status)
+        self.render_lines(area, cx, git_status, clipboard)
             .into_iter()
             .enumerate()
             .for_each(|(index, line)| {
@@ -1081,13 +1099,15 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
         area: Rect,
         cx: &mut Context,
         git_status: &'a HashMap<PathBuf, FileChangeStatus>,
+        clipboard: Option<(&'a Path, &'a str)>,
     ) -> Vec<RenderedLine<'a>> {
         if let Some(pre_render) = self.pre_render.take() {
             pre_render(self, area);
         }
 
         self.winline = self.winline.min(area.height.saturating_sub(1) as usize);
-        let skip = self.selected.saturating_sub(self.winline);
+        // Adjust skip: subtract 1 because the root line is hidden
+        let skip = self.selected.saturating_sub(self.winline).saturating_sub(1);
 
         let params = RenderTreeParams {
             tree: &self.tree,
@@ -1095,9 +1115,12 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
             level: 0,
             selected: self.selected,
             git_status,
+            clipboard,
         };
 
         let lines = render_tree(params, cx);
+        // Skip the root directory line
+        let lines: Vec<_> = lines.into_iter().skip(1).collect();
 
         self.max_len = lines
             .iter()
