@@ -363,6 +363,7 @@ impl Client {
             supports_memory_references: Some(false),
             supports_progress_reporting: Some(false),
             supports_invalidated_event: Some(false),
+            supports_start_debugging_request: Some(true),
         };
 
         let response = self.request::<requests::Initialize>(args).await?;

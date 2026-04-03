@@ -173,6 +173,9 @@ impl Editor {
                         all_threads_stopped,
                         ..
                     }) => {
+                        // Set active client first so select_thread_id operates on the correct session
+                        self.debug_adapters.set_active_client(id);
+
                         let debugger = match self.debug_adapters.get_client_mut(id) {
                             Some(debugger) => debugger,
                             None => return false,

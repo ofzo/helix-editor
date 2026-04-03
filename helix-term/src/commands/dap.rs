@@ -251,7 +251,6 @@ pub fn dap_launch(cx: &mut Context) {
             return;
         }
     };
-
     let templates = config.templates.clone();
 
     let columns = [ui::PickerColumn::new(
