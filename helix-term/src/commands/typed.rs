@@ -145,6 +145,20 @@ fn open(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 
 fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow::Result<()> {
     for arg in args {
+        if helix_view::scp::is_scp_url(&arg) {
+            let parsed = helix_view::scp::ScpUrl::parse(&arg)
+                .ok_or_else(|| anyhow::anyhow!("invalid scp URL: {arg}"))?;
+            let url_string = parsed.to_url_string();
+            let local_path = helix_view::scp::download(&parsed)?;
+            let _ = cx.editor.open(&local_path, action)?;
+            let (view, doc) = current!(cx.editor);
+            doc.set_remote_url(Some(url_string));
+            let pos =
+                Selection::point(pos_at_coords(doc.text().slice(..), Position::default(), true));
+            doc.set_selection(view.id, pos);
+            align_view(doc, view, Align::Center);
+            continue;
+        }
         let (path, pos) = crate::args::parse_file(&arg);
         let path = helix_stdx::path::expand_tilde(path);
         // If the path is a directory, open a file picker on that directory and update the status
@@ -210,7 +224,7 @@ fn buffer_close_by_ids_impl(
     Ok(())
 }
 
-fn buffer_gather_paths_impl(editor: &mut Editor, args: Args) -> Vec<DocumentId> {
+fn buffer_gather_paths_impl(editor: &mut Editor, args: &Args) -> Vec<DocumentId> {
     // No arguments implies current document
     if args.is_empty() {
         let doc_id = view!(editor).doc;
@@ -254,7 +268,8 @@ fn buffer_close(
         return Ok(());
     }
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
+
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
@@ -267,7 +282,7 @@ fn force_buffer_close(
         return Ok(());
     }
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, true)
 }
 
@@ -535,7 +550,7 @@ fn write_buffer_close(
         },
     )?;
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
@@ -557,7 +572,7 @@ fn force_write_buffer_close(
         },
     )?;
 
-    let document_ids = buffer_gather_paths_impl(cx.editor, args);
+    let document_ids = buffer_gather_paths_impl(cx.editor, &args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
 }
 
@@ -2634,6 +2649,107 @@ fn reset_diff_change(
     Ok(())
 }
 
+fn preview_diff_change(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let editor = &mut cx.editor;
+
+    let (view, doc) = current!(editor);
+    let Some(handle) = doc.diff_handle() else {
+        bail!("Diff is not available in the current buffer")
+    };
+
+    let diff = handle.load();
+    let doc_text = doc.text().slice(..);
+    let diff_base = diff.diff_base();
+
+    let mut hunks: Vec<_> = diff
+        .hunks_intersecting_line_ranges(doc.selection(view.id).line_ranges(doc_text))
+        .collect();
+
+    if hunks.is_empty() {
+        bail!("There are no changes under any selection");
+    }
+
+    // Build styled diff lines with colors (unified diff format with line numbers)
+    let mut diff_lines: Vec<tui::text::Spans> = Vec::new();
+
+    for hunk in &hunks {
+        // Removed lines (old content) from diff_base - red color
+        if hunk.before.start < hunk.before.end {
+            let start_char = diff_base.line_to_char(hunk.before.start as usize);
+            let end_char = diff_base.line_to_char(hunk.before.end as usize);
+            let old_text: String = diff_base.slice(start_char..end_char).chunks().collect();
+            for (i, line) in old_text.lines().enumerate() {
+                let line_num = hunk.before.start + i as u32 + 1;
+                let spans = tui::text::Spans::from(vec![
+                    tui::text::Span::styled(
+                        format!("{:>4} ", line_num),
+                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
+                    ),
+                    tui::text::Span::styled(
+                        format!("- {}", line),
+                        helix_view::graphics::Style::default()
+                            .fg(helix_view::graphics::Color::White)
+                            .bg(helix_view::graphics::Color::Red),
+                    ),
+                ]);
+                diff_lines.push(spans);
+            }
+        }
+
+        // Added lines (new content) from doc_text - green color
+        if hunk.after.start < hunk.after.end {
+            let start_char = doc_text.line_to_char(hunk.after.start as usize);
+            let end_char = doc_text.line_to_char(hunk.after.end as usize);
+            let new_text: String = doc_text.slice(start_char..end_char).chunks().collect();
+            for (i, line) in new_text.lines().enumerate() {
+                let line_num = hunk.after.start + i as u32 + 1;
+                let spans = tui::text::Spans::from(vec![
+                    tui::text::Span::styled(
+                        format!("{:>4} ", line_num),
+                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
+                    ),
+                    tui::text::Span::styled(
+                        format!("+ {}", line),
+                        helix_view::graphics::Style::default()
+                            .fg(helix_view::graphics::Color::White)
+                            .bg(helix_view::graphics::Color::Green),
+                    ),
+                ]);
+                diff_lines.push(spans);
+            }
+        }
+    }
+
+    drop(diff);
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let cursor_pos = editor.cursor().0.unwrap_or_default();
+                let contents = tui::text::Text::from(diff_lines);
+                let contents = ui::Text::from(contents);
+                let popup = Popup::new("diff-preview", contents)
+                    .auto_close(true)
+                    .position(Some(helix_core::Position::new(cursor_pos.row + 1, 0)));
+                compositor.replace_or_push("diff-preview", popup);
+            },
+        ));
+        Ok(call)
+    };
+
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
 fn clear_register(
     cx: &mut compositor::Context,
     args: Args,
@@ -2856,6 +2972,181 @@ fn echo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 }
 
 fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn float_term(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let cmd_str = args.join(" ");
+    let has_custom_cmd = !cmd_str.is_empty();
+
+    let callback = async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(move |editor, compositor| {
+                use crate::ui;
+
+                let id_str = if has_custom_cmd {
+                    "float-terminal-cmd"
+                } else {
+                    "float-terminal"
+                };
+
+                if compositor.remove(id_str).is_some() {
+                    return;
+                }
+
+                let config = editor.config();
+                let size = compositor.size();
+                let w = (size.width as u32
+                    * config.terminal_pane.float_width_percent as u32
+                    / 100) as u16;
+                let h = (size.height as u32
+                    * config.terminal_pane.float_height_percent as u32
+                    / 100) as u16;
+
+                let terminal = if has_custom_cmd {
+                    // Check if the command exists in PATH before launching
+                    let first_token = cmd_str.split_whitespace().next().unwrap_or("");
+                    let cmd_exists = if first_token.contains('/') {
+                        std::path::Path::new(first_token).exists()
+                    } else {
+                        std::env::var_os("PATH")
+                            .map(|paths| {
+                                std::env::split_paths(&paths)
+                                    .any(|dir| dir.join(first_token).is_file())
+                            })
+                            .unwrap_or(false)
+                    };
+                    if !cmd_exists {
+                        return;
+                    }
+
+                    let shell = editor.config().shell.clone();
+                    let shell_cmd = shell.first().cloned().unwrap_or_else(|| "sh".to_string());
+                    let mut shell_args: Vec<String> = shell[1..].to_vec();
+                    shell_args.push(cmd_str.clone());
+                    let title = cmd_str.clone();
+                    match ui::TerminalPane::new_with_cmd(
+                        h.max(2),
+                        w.max(2),
+                        0,
+                        shell_cmd,
+                        shell_args,
+                        title,
+                    ) {
+                        Ok(term) => term,
+                        Err(_) => return,
+                    }
+                } else {
+                    // Default shell — try prewarmed terminal first
+                    if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                        let prewarmed = editor_view.float_terminal.take().or_else(|| {
+                            editor_view
+                                .float_terminal_prewarm
+                                .take()
+                                .and_then(|rx| rx.try_recv().ok())
+                        });
+                        if let Some(term) = prewarmed {
+                            let float = ui::FloatTerminal::new(term);
+                            let wp = config.terminal_pane.float_width_percent;
+                            let hp = config.terminal_pane.float_height_percent;
+                            let overlay = ui::overlay::Overlay {
+                                content: float,
+                                calc_child_size: Box::new(move |rect| {
+                                    use helix_view::graphics::Rect;
+                                    let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                                    let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                                    let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                                    let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                                    Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                                }),
+                            };
+                            compositor.push(Box::new(overlay));
+                            return;
+                        }
+                    }
+                    match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
+                        Ok(term) => term,
+                        Err(err) => {
+                            editor.set_error(format!("Failed to open terminal: {}", err));
+                            return;
+                        }
+                    }
+                };
+
+                let float = ui::FloatTerminal::new_with_id(terminal, id_str);
+                let wp = config.terminal_pane.float_width_percent;
+                let hp = config.terminal_pane.float_height_percent;
+                let overlay = ui::overlay::Overlay {
+                    content: float,
+                    calc_child_size: Box::new(move |rect| {
+                        use helix_view::graphics::Rect;
+                        let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                        let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                        let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                        let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                        Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                    }),
+                };
+                compositor.push(Box::new(overlay));
+            }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn bottom_term(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(|editor, compositor| {
+                use crate::ui;
+
+                let size = compositor.size();
+                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                    match editor_view.bottom_terminal.as_mut() {
+                        Some(terminal) => {
+                            if terminal.is_focus() {
+                                terminal.unfocus();
+                            } else if terminal.is_opened() {
+                                terminal.close();
+                            } else {
+                                terminal.focus();
+                            }
+                        }
+                        None => {
+                            let config = editor.config();
+                            let panel_height = config.terminal_pane.panel_height;
+                            let cols = size.width;
+                            match ui::TerminalPane::new(panel_height, cols, panel_height) {
+                                Ok(term) => editor_view.bottom_terminal = Some(term),
+                                Err(err) => {
+                                    editor
+                                        .set_error(format!("Failed to open terminal: {}", err));
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
     Ok(())
 }
 
@@ -3877,6 +4168,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "preview-diff-change",
+        aliases: &["diffpreview"],
+        doc: "Preview the diff change at the cursor position in a popup.",
+        fun: preview_diff_change,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "clear-register",
         aliases: &[],
         doc: "Clear given register. If no argument is provided, clear all registers.",
@@ -3991,6 +4293,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: untrust_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "float-term",
+        aliases: &["ft"],
+        doc: "Toggle floating terminal. Optionally run a command: :float-term <cmd> [args...]",
+        fun: float_term,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "bottom-term",
+        aliases: &["bt"],
+        doc: "Toggle bottom terminal panel.",
+        fun: bottom_term,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
     }
 ];
 

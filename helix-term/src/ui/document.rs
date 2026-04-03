@@ -215,7 +215,7 @@ pub fn render_text(
             }
             GraphemeStyle {
                 syntax_style: style,
-                overlay_style: Style::default(),
+                overlay_style: overlay_highlighter.style,
             }
         } else {
             GraphemeStyle {

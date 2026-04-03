@@ -14,7 +14,7 @@ use helix_vcs::{FileChange, Hunk};
 pub use lsp::*;
 pub use syntax::*;
 use tui::{
-    text::{Span, Spans},
+    text::{Span, Spans, ToSpan},
     widgets::Cell,
 };
 pub use typed::*;
@@ -48,6 +48,8 @@ use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
     editor::{Action, Motion},
     expansion,
+    graphics::Rect,
+    icons::ICONS,
     info::Info,
     input::KeyEvent,
     keyboard::KeyCode,
@@ -616,6 +618,11 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
+        open_or_focus_explorer, "Open or focus explorer",
+        reveal_current_file, "Reveal current file in explorer",
+        toggle_fold, "Toggle fold at cursor position",
+        toggle_float_terminal, "Toggle floating terminal",
+        toggle_bottom_terminal, "Toggle bottom terminal panel",
     );
 }
 
@@ -758,11 +765,13 @@ fn move_char_right(cx: &mut Context) {
 }
 
 fn move_line_up(cx: &mut Context) {
-    move_impl(cx, move_vertically, Direction::Backward, Movement::Move)
+    move_impl(cx, move_vertically, Direction::Backward, Movement::Move);
+    adjust_cursor_for_folds(cx, Direction::Backward);
 }
 
 fn move_line_down(cx: &mut Context) {
-    move_impl(cx, move_vertically, Direction::Forward, Movement::Move)
+    move_impl(cx, move_vertically, Direction::Forward, Movement::Move);
+    adjust_cursor_for_folds(cx, Direction::Forward);
 }
 
 fn move_visual_line_up(cx: &mut Context) {
@@ -771,7 +780,8 @@ fn move_visual_line_up(cx: &mut Context) {
         move_vertically_visual,
         Direction::Backward,
         Movement::Move,
-    )
+    );
+    adjust_cursor_for_folds(cx, Direction::Backward);
 }
 
 fn move_visual_line_down(cx: &mut Context) {
@@ -780,7 +790,33 @@ fn move_visual_line_down(cx: &mut Context) {
         move_vertically_visual,
         Direction::Forward,
         Movement::Move,
-    )
+    );
+    adjust_cursor_for_folds(cx, Direction::Forward);
+}
+
+/// After a vertical movement, if the cursor lands inside a folded region,
+/// jump to the next/prev visible line.
+fn adjust_cursor_for_folds(cx: &mut Context, dir: Direction) {
+    let (view, doc) = current!(cx.editor);
+    if doc.folded_lines.is_empty() {
+        return;
+    }
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let cursor_pos = range.cursor(text);
+        let cursor_line = text.char_to_line(cursor_pos);
+        let target_line = match dir {
+            Direction::Forward => doc.next_visible_line(cursor_line),
+            Direction::Backward => doc.prev_visible_line(cursor_line),
+        };
+        if target_line == cursor_line {
+            return range;
+        }
+        // Move cursor to the start of the target line
+        let new_pos = text.line_to_char(target_line);
+        Range::new(new_pos, new_pos)
+    });
+    doc.set_selection(view.id, selection);
 }
 
 fn extend_char_left(cx: &mut Context) {
@@ -2582,7 +2618,15 @@ fn global_search(cx: &mut Context) {
                 .expect("global search paths are normalized (can't end in `..`)")
                 .to_string_lossy();
 
-            Cell::from(Spans::from(vec![
+            let mut spans = Vec::with_capacity(5);
+
+            let icons = ICONS.load();
+
+            if let Some(icon) = icons.fs().from_path(&path) {
+                spans.push(icon.to_span_with(|icon| format!("{icon} ")));
+            }
+
+            spans.extend_from_slice(&[
                 Span::styled(directories, config.directory_style),
                 Span::raw(filename),
                 Span::styled(":", config.colon_style),
@@ -3203,6 +3247,50 @@ fn file_picker_in_current_directory(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
+fn open_or_focus_explorer(cx: &mut Context) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            if let Some(editor) = compositor.find::<ui::EditorView>() {
+                match editor.explorer.as_mut() {
+                    Some(explore) if explore.is_open() => explore.close(),
+                    Some(explore) => explore.focus(),
+                    None => match ui::Explorer::new(cx) {
+                        Ok(explore) => editor.explorer = Some(explore),
+                        Err(err) => cx.editor.set_error(format!("{}", err)),
+                    },
+                }
+            }
+        },
+    ));
+}
+
+fn reveal_file(cx: &mut Context, path: Option<PathBuf>) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            if let Some(editor) = compositor.find::<ui::EditorView>() {
+                (|| match editor.explorer.as_mut() {
+                    Some(explorer) => match path {
+                        Some(path) => explorer.reveal_file(path),
+                        None => explorer.reveal_current_file(cx),
+                    },
+                    None => {
+                        editor.explorer = Some(ui::Explorer::new(cx)?);
+                        if let Some(explorer) = editor.explorer.as_mut() {
+                            explorer.reveal_current_file(cx)?;
+                        }
+                        Ok(())
+                    }
+                })()
+                .unwrap_or_else(|err| cx.editor.set_error(err.to_string()))
+            }
+        },
+    ));
+}
+
+fn reveal_current_file(cx: &mut Context) {
+    reveal_file(cx, None)
+}
+
 fn file_explorer(cx: &mut Context) {
     let root = find_workspace().0;
     if !root.exists() {
@@ -3255,6 +3343,94 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     }
 }
 
+fn toggle_float_terminal(cx: &mut Context) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            // If float terminal is currently displayed, remove it
+            if compositor.remove("float-terminal").is_some() {
+                return;
+            }
+
+            if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                // Take existing terminal, check prewarm, or create new one
+                let terminal = editor_view.float_terminal.take().or_else(|| {
+                    editor_view
+                        .float_terminal_prewarm
+                        .take()
+                        .and_then(|rx| rx.try_recv().ok())
+                });
+                let terminal = match terminal {
+                    Some(term) => term,
+                    None => {
+                        let config = cx.editor.config();
+                        let size = compositor.size();
+                        let w = (size.width as u32 * config.terminal_pane.float_width_percent as u32
+                            / 100) as u16;
+                        let h = (size.height as u32
+                            * config.terminal_pane.float_height_percent as u32
+                            / 100) as u16;
+                        match ui::TerminalPane::new(h.max(2), w.max(2), 0) {
+                            Ok(term) => term,
+                            Err(err) => {
+                                cx.editor.set_error(format!("Failed to open terminal: {}", err));
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                let config = cx.editor.config();
+                let float = ui::FloatTerminal::new(terminal);
+                let wp = config.terminal_pane.float_width_percent;
+                let hp = config.terminal_pane.float_height_percent;
+                let overlay = ui::overlay::Overlay {
+                    content: float,
+                    calc_child_size: Box::new(move |rect: Rect| {
+                        let w = (rect.width as u32 * wp as u32 / 100) as u16;
+                        let h = (rect.height as u32 * hp as u32 / 100) as u16;
+                        let x = rect.x + (rect.width.saturating_sub(w)) / 2;
+                        let y = rect.y + (rect.height.saturating_sub(h)) / 2;
+                        Rect::new(x, y, w.min(rect.width), h.min(rect.height))
+                    }),
+                };
+                compositor.push(Box::new(overlay));
+            }
+        },
+    ));
+}
+
+fn toggle_bottom_terminal(cx: &mut Context) {
+    cx.callback.push(Box::new(
+        |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            let size = compositor.size();
+            if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                match editor_view.bottom_terminal.as_mut() {
+                    Some(terminal) => {
+                        if terminal.is_focus() {
+                            terminal.unfocus();
+                        } else if terminal.is_opened() {
+                            terminal.close();
+                        } else {
+                            terminal.focus();
+                        }
+                    }
+                    None => {
+                        let config = cx.editor.config();
+                        let panel_height = config.terminal_pane.panel_height;
+                        let cols = size.width;
+                        match ui::TerminalPane::new(panel_height, cols, panel_height) {
+                            Ok(term) => editor_view.bottom_terminal = Some(term),
+                            Err(err) => {
+                                cx.editor.set_error(format!("Failed to open terminal: {}", err));
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ));
+}
+
 fn buffer_picker(cx: &mut Context) {
     let current = view!(cx.editor).doc;
 
@@ -3301,11 +3477,23 @@ fn buffer_picker(cx: &mut Context) {
                 .path
                 .as_deref()
                 .map(helix_stdx::path::get_relative_path);
-            path.as_deref()
+
+            let name = path
+                .as_deref()
                 .and_then(Path::to_str)
-                .unwrap_or(SCRATCH_BUFFER_NAME)
-                .to_string()
-                .into()
+                .unwrap_or(SCRATCH_BUFFER_NAME);
+
+            let icons = ICONS.load();
+
+            let mut spans = Vec::with_capacity(2);
+
+            if let Some(icon) = icons.fs().from_optional_path(path.as_deref()) {
+                spans.push(icon.to_span_with(|icon| format!("{icon} ")));
+            }
+
+            spans.push(Span::raw(name.to_string()));
+
+            Cell::from(Spans::from(spans))
         }),
     ];
 
@@ -3379,11 +3567,23 @@ fn jumplist_picker(cx: &mut Context) {
                 .path
                 .as_deref()
                 .map(helix_stdx::path::get_relative_path);
-            path.as_deref()
+
+            let name = path
+                .as_deref()
                 .and_then(Path::to_str)
-                .unwrap_or(SCRATCH_BUFFER_NAME)
-                .to_string()
-                .into()
+                .unwrap_or(SCRATCH_BUFFER_NAME);
+
+            let icons = ICONS.load();
+
+            let mut spans = Vec::with_capacity(2);
+
+            if let Some(icon) = icons.fs().from_optional_path(path.as_deref()) {
+                spans.push(icon.to_span_with(|icon| format!("{icon} ")));
+            }
+
+            spans.push(Span::raw(name.to_string()));
+
+            Cell::from(Spans::from(spans))
         }),
         ui::PickerColumn::new("flags", |item: &JumpMeta, _| {
             let mut flags = Vec::new();
@@ -3453,12 +3653,43 @@ fn changed_file_picker(cx: &mut Context) {
 
     let columns = [
         PickerColumn::new("change", |change: &FileChange, data: &FileChangeData| {
+            let icons = ICONS.load();
             match change {
-                FileChange::Untracked { .. } => Span::styled("+ untracked", data.style_untracked),
-                FileChange::Modified { .. } => Span::styled("~ modified", data.style_modified),
-                FileChange::Conflict { .. } => Span::styled("x conflict", data.style_conflict),
-                FileChange::Deleted { .. } => Span::styled("- deleted", data.style_deleted),
-                FileChange::Renamed { .. } => Span::styled("> renamed", data.style_renamed),
+                FileChange::Untracked { .. } => Span::styled(
+                    match icons.vcs().added() {
+                        Some(icon) => Cow::from(format!("{icon} untracked")),
+                        None => Cow::from("untracked"),
+                    },
+                    data.style_untracked,
+                ),
+                FileChange::Modified { .. } => Span::styled(
+                    match icons.vcs().modified() {
+                        Some(icon) => Cow::from(format!("{icon} modified")),
+                        None => Cow::from("modified"),
+                    },
+                    data.style_modified,
+                ),
+                FileChange::Conflict { .. } => Span::styled(
+                    match icons.vcs().conflict() {
+                        Some(icon) => Cow::from(format!("{icon} conflict")),
+                        None => Cow::from("conflict"),
+                    },
+                    data.style_conflict,
+                ),
+                FileChange::Deleted { .. } => Span::styled(
+                    match icons.vcs().removed() {
+                        Some(icon) => Cow::from(format!("{icon} deleted")),
+                        None => Cow::from("deleted"),
+                    },
+                    data.style_deleted,
+                ),
+                FileChange::Renamed { .. } => Span::styled(
+                    match icons.vcs().renamed() {
+                        Some(icon) => Cow::from(format!("{icon} renamed")),
+                        None => Cow::from("renamed"),
+                    },
+                    data.style_renamed,
+                ),
             }
             .into()
         }),
@@ -3926,14 +4157,21 @@ fn goto_line_without_jumplist(
 ) {
     if let Some(count) = count {
         let (view, doc) = current!(editor);
-        let text = doc.text().slice(..);
-        let max_line = if text.line(text.len_lines() - 1).len_chars() == 0 {
-            // If the last line is blank, don't jump to it.
-            text.len_lines().saturating_sub(2)
-        } else {
-            text.len_lines() - 1
+        let line_idx = {
+            let text = doc.text().slice(..);
+            let max_line = if text.line(text.len_lines() - 1).len_chars() == 0 {
+                // If the last line is blank, don't jump to it.
+                text.len_lines().saturating_sub(2)
+            } else {
+                text.len_lines() - 1
+            };
+            std::cmp::min(count.get() - 1, max_line)
         };
-        let line_idx = std::cmp::min(count.get() - 1, max_line);
+
+        // Unfold any fold hiding the target line so the cursor remains visible
+        doc.ensure_line_visible(line_idx);
+
+        let text = doc.text().slice(..);
         let pos = text.line_to_char(line_idx);
         let selection = doc
             .selection(view.id)
@@ -6031,6 +6269,24 @@ fn scroll_up(cx: &mut Context) {
 
 fn scroll_down(cx: &mut Context) {
     scroll(cx, cx.count(), Direction::Forward, false);
+}
+
+fn toggle_fold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor_line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    doc.ensure_fold_ranges();
+    match doc.toggle_fold_at_line(cursor_line) {
+        Some(fold_start) if fold_start != cursor_line => {
+            // Move cursor to the fold start line
+            let pos = doc.text().line_to_char(fold_start);
+            doc.set_selection(view.id, Selection::point(pos));
+        }
+        Some(_) => {}
+        None => {
+            cx.editor.set_status("No fold at cursor position");
+        }
+    }
 }
 
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {
