@@ -293,6 +293,51 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ExplorerConfig {
+    pub position: ExplorerPosition,
+    /// explorer column width
+    pub column_width: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExplorerPosition {
+    Left,
+    Right,
+}
+
+impl Default for ExplorerConfig {
+    fn default() -> Self {
+        Self {
+            position: ExplorerPosition::Left,
+            column_width: 36,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct TerminalPaneConfig {
+    /// Height of the bottom terminal panel in lines.
+    pub panel_height: u16,
+    /// Width percentage of the floating terminal (0-100).
+    pub float_width_percent: u16,
+    /// Height percentage of the floating terminal (0-100).
+    pub float_height_percent: u16,
+}
+
+impl Default for TerminalPaneConfig {
+    fn default() -> Self {
+        Self {
+            panel_height: 15,
+            float_width_percent: 80,
+            float_height_percent: 80,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
     /// Padding to keep between the edge of the screen and the cursor when scrolling. Defaults to 5.
     pub scrolloff: usize,
@@ -389,6 +434,10 @@ pub struct Config {
     pub indent_guides: IndentGuidesConfig,
     /// Whether to color modes with different colors. Defaults to `false`.
     pub color_modes: bool,
+    /// explore config
+    pub explorer: ExplorerConfig,
+    /// Terminal pane config
+    pub terminal_pane: TerminalPaneConfig,
     pub soft_wrap: SoftWrap,
     /// Workspace specific lsp ceiling dirs
     pub workspace_lsp_roots: Vec<PathBuf>,
@@ -566,6 +615,8 @@ pub struct LspConfig {
     pub snippets: bool,
     /// Whether to include declaration in the goto reference query
     pub goto_reference_include_declaration: bool,
+    /// Controls the length of the inlay, setting it to 0(default) will not limit.
+    pub max_inlay_hint_length: usize,
 }
 
 impl Default for LspConfig {
@@ -582,6 +633,7 @@ impl Default for LspConfig {
             snippets: true,
             goto_reference_include_declaration: true,
             display_color_swatches: true,
+            max_inlay_hint_length: 0,
         }
     }
 }
@@ -601,7 +653,6 @@ pub struct StatusLineConfig {
     pub left: Vec<StatusLineElement>,
     pub center: Vec<StatusLineElement>,
     pub right: Vec<StatusLineElement>,
-    pub separator: String,
     pub mode: ModeConfig,
     pub diagnostics: Vec<Severity>,
     pub workspace_diagnostics: Vec<Severity>,
@@ -627,7 +678,6 @@ impl Default for StatusLineConfig {
                 E::Position,
                 E::FileEncoding,
             ],
-            separator: String::from("│"),
             mode: ModeConfig::default(),
             diagnostics: vec![Severity::Warning, Severity::Error],
             workspace_diagnostics: vec![Severity::Warning, Severity::Error],
@@ -670,6 +720,9 @@ pub enum StatusLineElement {
 
     /// The file absolute path
     FileAbsolutePath,
+
+    /// The file relative path base on repo or home dir
+    FileRelativePath,
 
     // The file modification indicator
     FileModificationIndicator,
@@ -827,6 +880,8 @@ pub enum GutterType {
     Spacer,
     /// Highlight local changes
     Diff,
+    /// Show fold indicators
+    Folds,
 }
 
 impl std::str::FromStr for GutterType {
@@ -838,8 +893,9 @@ impl std::str::FromStr for GutterType {
             "spacer" => Ok(Self::Spacer),
             "line-numbers" => Ok(Self::LineNumbers),
             "diff" => Ok(Self::Diff),
+            "folds" => Ok(Self::Folds),
             _ => anyhow::bail!(
-                "Gutter type can only be `diagnostics`, `spacer`, `line-numbers` or `diff`."
+                "Gutter type can only be `diagnostics`, `spacer`, `line-numbers`, `diff` or `folds`."
             ),
         }
     }
@@ -849,14 +905,12 @@ impl std::str::FromStr for GutterType {
 #[serde(default)]
 pub struct WhitespaceConfig {
     pub render: WhitespaceRender,
-    pub characters: WhitespaceCharacters,
 }
 
 impl Default for WhitespaceConfig {
     fn default() -> Self {
         Self {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::None),
-            characters: WhitespaceCharacters::default(),
         }
     }
 }
@@ -983,35 +1037,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WhitespaceCharacters {
-    pub space: char,
-    pub nbsp: char,
-    pub nnbsp: char,
-    pub tab: char,
-    pub tabpad: char,
-    pub newline: char,
-}
-
-impl Default for WhitespaceCharacters {
-    fn default() -> Self {
-        Self {
-            space: '·',   // U+00B7
-            nbsp: '⍽',    // U+237D
-            nnbsp: '␣',   // U+2423
-            tab: '→',     // U+2192
-            newline: '⏎', // U+23CE
-            tabpad: ' ',
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct IndentGuidesConfig {
     pub render: bool,
     pub character: char,
     pub skip_levels: u8,
+    pub scope: bool,
 }
 
 impl Default for IndentGuidesConfig {
@@ -1020,6 +1051,7 @@ impl Default for IndentGuidesConfig {
             skip_levels: 0,
             render: false,
             character: '│',
+            scope: false,
         }
     }
 }
@@ -1132,6 +1164,8 @@ impl Default for Config {
             bufferline: BufferLine::default(),
             indent_guides: IndentGuidesConfig::default(),
             color_modes: false,
+            explorer: ExplorerConfig::default(),
+            terminal_pane: TerminalPaneConfig::default(),
             soft_wrap: SoftWrap {
                 enable: Some(false),
                 ..SoftWrap::default()
@@ -1323,6 +1357,18 @@ pub enum CloseError {
     BufferModified(String),
     /// Document failed to save
     SaveError(anyhow::Error),
+}
+
+impl From<CloseError> for anyhow::Error {
+    fn from(error: CloseError) -> Self {
+        match error {
+            CloseError::DoesNotExist => anyhow::anyhow!("Document doesn't exist"),
+            CloseError::BufferModified(error) => {
+                anyhow::anyhow!(format!("Buffer modified: '{error}'"))
+            }
+            CloseError::SaveError(error) => anyhow::anyhow!(format!("Save error: {error}")),
+        }
+    }
 }
 
 impl Editor {
@@ -1939,6 +1985,7 @@ impl Editor {
                 true,
                 self.config.clone(),
                 self.syn_loader.clone(),
+                &self.diff_providers,
             )?;
 
             let diagnostics =

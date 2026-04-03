@@ -8,8 +8,9 @@ use crate::{
     ui::{
         document::{render_document, LinePos, TextRenderer},
         statusline,
+        terminal::TerminalPane,
         text_decorations::{self, Decoration, DecorationManager, InlineDiagnostics},
-        Completion, ProgressSpinners,
+        Completion, Explorer, ProgressSpinners,
     },
 };
 
@@ -24,14 +25,15 @@ use helix_core::{
 };
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
-    document::{Mode, SCRATCH_BUFFER_NAME},
-    editor::{CompleteAction, CursorShapeConfig},
+    document::{Mode, DEFAULT_LANGUAGE_NAME, SCRATCH_BUFFER_NAME},
+    editor::{CompleteAction, CursorShapeConfig, ExplorerPosition},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
+    icons::ICONS,
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc, sync::mpsc};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -44,6 +46,10 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    pub(crate) explorer: Option<Explorer>,
+    pub(crate) bottom_terminal: Option<TerminalPane>,
+    pub(crate) float_terminal: Option<TerminalPane>,
+    pub(crate) float_terminal_prewarm: Option<mpsc::Receiver<TerminalPane>>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +73,10 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            explorer: None,
+            bottom_terminal: None,
+            float_terminal: None,
+            float_terminal_prewarm: None,
         }
     }
 
@@ -95,7 +105,7 @@ impl EditorView {
         let mut decorations = DecorationManager::default();
 
         if is_focused && config.cursorline {
-            decorations.add_decoration(Self::cursorline(doc, view, theme));
+            decorations.add_decoration(Self::cursorline(doc, view, theme, &editor.mode));
         }
 
         if is_focused && config.cursorcolumn {
@@ -116,14 +126,23 @@ impl EditorView {
             decorations.add_decoration(line_decoration);
         }
 
+        let folded_ranges = doc.folded_line_ranges();
+        // Extend viewport height to account for folded lines so the highlighter
+        // covers all content that will actually render on screen.
+        let total_hidden: u16 = folded_ranges
+            .iter()
+            .map(|(start, end)| (end - start + 1) as u16)
+            .sum();
+        let effective_height = inner.height.saturating_add(total_hidden);
+
         let syntax_highlighter =
-            Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);
+            Self::doc_syntax_highlighter(doc, view_offset.anchor, effective_height, &loader);
         let mut overlays = Vec::new();
 
         overlays.push(Self::overlay_syntax_highlights(
             doc,
             view_offset.anchor,
-            inner.height,
+            effective_height,
             &text_annotations,
         ));
 
@@ -133,7 +152,7 @@ impl EditorView {
             .unwrap_or(config.rainbow_brackets)
         {
             if let Some(overlay) =
-                Self::doc_rainbow_highlights(doc, view_offset.anchor, inner.height, theme, &loader)
+                Self::doc_rainbow_highlights(doc, view_offset.anchor, effective_height, theme, &loader)
             {
                 overlays.push(overlay);
             }
@@ -205,6 +224,66 @@ impl EditorView {
             inline_diagnostic_config,
             config.end_of_line_diagnostics,
         ));
+        // Compute scope range for scope-only indent guides: (indent_col, start_line, end_line)
+        let scope_range = if config.indent_guides.scope {
+            let text = doc.text().slice(..);
+            let cursor_pos = primary_cursor;
+            let cursor_line = text.char_to_line(cursor_pos);
+            let tab_width = doc.tab_width();
+            let indent_width = doc.indent_style.indent_width(tab_width);
+            let total_lines = text.len_lines();
+
+            let line_indent = |line: usize| -> usize {
+                let line_text = text.line(line);
+                let mut col = 0usize;
+                for ch in line_text.chars() {
+                    match ch {
+                        ' ' => col += 1,
+                        '\t' => col += tab_width,
+                        _ => break,
+                    }
+                }
+                col
+            };
+
+            let is_blank = |line: usize| -> bool {
+                text.line(line)
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            };
+
+            let cursor_indent = line_indent(cursor_line);
+            // Walk backward to find scope start (first non-blank line with strictly lower indent)
+            let mut scope_col = 0;
+            let mut scope_start = 0;
+            for line in (0..cursor_line).rev() {
+                if is_blank(line) {
+                    continue;
+                }
+                let indent = line_indent(line);
+                if indent < cursor_indent {
+                    scope_col = (indent / indent_width) * indent_width;
+                    scope_start = line;
+                    break;
+                }
+            }
+            // Walk forward to find scope end (first line with indent <= scope_col)
+            let mut scope_end = total_lines.saturating_sub(1);
+            for line in (cursor_line + 1)..total_lines {
+                if is_blank(line) {
+                    continue;
+                }
+                let indent = line_indent(line);
+                if indent <= scope_col {
+                    scope_end = line.saturating_sub(1);
+                    break;
+                }
+            }
+            Some((scope_col, scope_start + 1, scope_end))
+        } else {
+            None
+        };
+
         render_document(
             surface,
             inner,
@@ -215,6 +294,8 @@ impl EditorView {
             overlays,
             theme,
             decorations,
+            &folded_ranges,
+            scope_range,
         );
 
         // if we're not at the edge of the screen, draw a right border
@@ -235,15 +316,17 @@ impl EditorView {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
 
-        let statusline_area = view
-            .area
-            .clip_top(view.area.height.saturating_sub(1))
-            .clip_bottom(1); // -1 from bottom to remove commandline
+        if editor.status_msg.is_none() {
+            let statusline_area = view
+                .area
+                .clip_top(view.area.height.saturating_sub(1))
+                .clip_bottom(1); // -1 from bottom to remove commandline
 
-        let mut context =
-            statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+            let mut context =
+                statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
 
-        statusline::render(&mut context, statusline_area, surface);
+            statusline::render(&mut context, statusline_area, surface);
+        }
     }
 
     pub fn render_rulers(
@@ -255,7 +338,8 @@ impl EditorView {
         theme: &Theme,
     ) {
         let editor_rulers = &editor.config().rulers;
-        let ruler_theme = theme
+
+        let style = theme
             .try_get("ui.virtual.ruler")
             .unwrap_or_else(|| Style::default().bg(Color::Red));
 
@@ -273,7 +357,12 @@ impl EditorView {
             .filter_map(|ruler| ruler.checked_sub(1 + view_offset.horizontal_offset as u16))
             .filter(|ruler| ruler < &viewport.width)
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
-            .for_each(|area| surface.set_style(area, ruler_theme))
+            .for_each(|area| {
+                let icons = ICONS.load();
+                for y in area.y..area.height {
+                    surface.set_string(area.x, y, icons.ui().r#virtual().ruler(), style);
+                }
+            });
     }
 
     fn viewport_byte_range(
@@ -538,12 +627,35 @@ impl EditorView {
         let cursorkind = cursor_shape_config.from_mode(mode);
         let cursor_is_block = cursorkind == CursorKind::Block;
 
-        let selection_scope = theme
-            .find_highlight_exact("ui.selection")
-            .expect("could not find `ui.selection` scope in the theme!");
-        let primary_selection_scope = theme
-            .find_highlight_exact("ui.selection.primary")
-            .unwrap_or(selection_scope);
+        // let selection_scope = theme
+        //     .find_scope_index_exact("ui.selection")
+        //     .expect("could not find `ui.selection` scope in the theme!");
+
+        let selection_scope = match mode {
+            Mode::Normal => theme.find_highlight_exact("ui.selection.normal"),
+            Mode::Select => theme.find_highlight_exact("ui.selection.select"),
+            Mode::Insert => theme.find_highlight_exact("ui.selection.insert"),
+        }
+        .unwrap_or(
+            theme
+                .find_highlight_exact("ui.selection")
+                .expect("could not find `ui.selection` scope in the theme!"),
+        );
+
+        // let primary_selection_scope = theme
+        //     .find_highlight_exact("ui.selection.primary")
+        //     .unwrap_or(selection_scope);
+
+        let primary_selection_scope = match mode {
+            Mode::Normal => theme.find_highlight_exact("ui.selection.primary.normal"),
+            Mode::Select => theme.find_highlight_exact("ui.selection.primary.select"),
+            Mode::Insert => theme.find_highlight_exact("ui.selection.primary.insert"),
+        }
+        .unwrap_or_else(|| {
+            theme
+                .find_highlight_exact("ui.selection.primary")
+                .unwrap_or(selection_scope)
+        });
 
         let base_cursor_scope = theme
             .find_highlight_exact("ui.cursor")
@@ -693,7 +805,30 @@ impl EditorView {
                 bufferline_inactive
             };
 
-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
+            let icons = ICONS.load();
+
+            let lang = doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
+
+            if let Some(icon) = icons
+                .fs()
+                .from_optional_path_or_lang(doc.path().map(|path| path.as_path()), lang)
+            {
+                let used_width = viewport.x.saturating_sub(x);
+                let rem_width = surface.area.width.saturating_sub(used_width);
+
+                let style = icon.color().map_or(style, |color| style.fg(color));
+
+                x = surface
+                    .set_stringn(x, viewport.y, format!(" {icon}"), rem_width as usize, style)
+                    .0;
+
+                if x >= surface.area.right() {
+                    break;
+                }
+            }
+
+            let text = format!(" {} {}", fname, if doc.is_modified() { "[+] " } else { "" });
+
             let used_width = viewport.x.saturating_sub(x);
             let rem_width = surface.area.width.saturating_sub(used_width);
 
@@ -836,7 +971,7 @@ impl EditorView {
     }
 
     /// Apply the highlighting on the lines where a cursor is active
-    pub fn cursorline(doc: &Document, view: &View, theme: &Theme) -> impl Decoration {
+    pub fn cursorline(doc: &Document, view: &View, theme: &Theme, mode: &Mode) -> impl Decoration {
         let text = doc.text().slice(..);
         // TODO only highlight the visual line that contains the cursor instead of the full visual line
         let primary_line = doc.selection(view.id).primary().cursor_line(text);
@@ -853,7 +988,13 @@ impl EditorView {
             .map(|range| range.cursor_line(text))
             .collect();
 
-        let primary_style = theme.get("ui.cursorline.primary");
+        let primary_style = match mode {
+            Mode::Normal => theme.try_get("ui.cursorline.primary.normal"),
+            Mode::Select => theme.try_get("ui.cursorline.primary.select"),
+            Mode::Insert => theme.try_get("ui.cursorline.primary.insert"),
+        }
+        .unwrap_or(theme.get("ui.cursorline.primary"));
+
         let secondary_style = theme.get("ui.cursorline.secondary");
         let viewport = view.area;
 
@@ -1152,8 +1293,36 @@ impl EditorView {
         on_next_key
     }
 
+    /// Spawn a background thread to pre-create a float terminal pane.
+    /// Safe to call multiple times; does nothing if a prewarm is already in progress
+    /// or a terminal is already available.
+    pub fn start_terminal_prewarm(&mut self) {
+        if self.float_terminal.is_some() || self.float_terminal_prewarm.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.float_terminal_prewarm = Some(rx);
+        std::thread::spawn(move || {
+            if let Ok(pane) = TerminalPane::new(24, 80, 0) {
+                let _ = tx.send(pane);
+            }
+        });
+    }
+
     pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
         commands::compute_inlay_hints_for_all_views(cx.editor, cx.jobs);
+
+        self.start_terminal_prewarm();
+
+        // Check if prewarm is ready
+        if self.float_terminal.is_none() {
+            if let Some(rx) = &self.float_terminal_prewarm {
+                if let Ok(pane) = rx.try_recv() {
+                    self.float_terminal = Some(pane);
+                    self.float_terminal_prewarm = None;
+                }
+            }
+        }
 
         EventResult::Ignored(None)
     }
@@ -1434,6 +1603,23 @@ impl Component for EditorView {
         event: &Event,
         context: &mut crate::compositor::Context,
     ) -> EventResult {
+        if let Some(terminal) = self.bottom_terminal.as_ref() {
+            if terminal.has_exited() {
+                self.bottom_terminal = None;
+            }
+        }
+        if let Some(terminal) = self.bottom_terminal.as_mut() {
+            if terminal.is_focus() {
+                if let EventResult::Consumed(callback) = terminal.handle_event(event, context) {
+                    return EventResult::Consumed(callback);
+                }
+            }
+        }
+        if let Some(explore) = self.explorer.as_mut() {
+            if let EventResult::Consumed(callback) = explore.handle_event(event, context) {
+                return EventResult::Consumed(callback);
+            }
+        }
         let mut cx = commands::Context {
             editor: context.editor,
             count: None,
@@ -1601,6 +1787,8 @@ impl Component for EditorView {
         surface.set_style(area, cx.editor.theme.get("ui.background"));
         let config = cx.editor.config();
 
+        let editor_area = area.clip_bottom(1);
+
         // check if bufferline should be rendered
         use helix_view::editor::BufferLine;
         let use_bufferline = match config.bufferline {
@@ -1609,14 +1797,54 @@ impl Component for EditorView {
             _ => false,
         };
 
-        // -1 for commandline and -1 for bufferline
-        let mut editor_area = area.clip_bottom(1);
-        if use_bufferline {
-            editor_area = editor_area.clip_top(1);
-        }
+        let editor_area = if use_bufferline {
+            editor_area.clip_top(1)
+        } else {
+            editor_area
+        };
+
+        let editor_area = if let Some(explorer) = &self.explorer {
+            let explorer_column_width = if explorer.is_opened() {
+                explorer.column_width().saturating_add(2)
+            } else {
+                0
+            };
+            // For future developer:
+            // We should have a Dock trait that allows a component to dock to the top/left/bottom/right
+            // of another component.
+            match config.explorer.position {
+                ExplorerPosition::Left => editor_area.clip_left(explorer_column_width),
+                ExplorerPosition::Right => editor_area.clip_right(explorer_column_width),
+            }
+        } else {
+            editor_area
+        };
+
+        // Clip bottom for terminal panel
+        let editor_area = if let Some(terminal) = &self.bottom_terminal {
+            if terminal.is_opened() && !terminal.has_exited() {
+                // +1 for the separator line
+                editor_area.clip_bottom(terminal.panel_height() + 1)
+            } else {
+                editor_area
+            }
+        } else {
+            editor_area
+        };
 
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
+
+        if let Some(explorer) = self.explorer.as_mut() {
+            if !explorer.is_focus() {
+                let area = if use_bufferline {
+                    area.clip_top(1)
+                } else {
+                    area
+                };
+                explorer.render(area, surface, cx);
+            }
+        }
 
         if use_bufferline {
             Self::render_bufferline(cx.editor, area.with_height(1), surface);
@@ -1693,12 +1921,61 @@ impl Component for EditorView {
             }
         }
 
+        // Render bottom terminal panel
+        if let Some(terminal) = self.bottom_terminal.as_mut() {
+            if terminal.is_opened() && !terminal.has_exited() {
+                let panel_h = terminal.panel_height();
+                // Calculate terminal area: below the editor, above the commandline
+                let term_y = area.y + area.height.saturating_sub(1 + panel_h + 1);
+                let sep_y = term_y;
+                let term_area = Rect::new(area.x, sep_y + 1, area.width, panel_h);
+
+                // Draw separator line
+                let sep_style = cx.editor.theme.get("ui.statusline");
+                for x in area.x..area.x + area.width {
+                    surface.set_string(x, sep_y, "─", sep_style);
+                }
+
+                terminal.render(term_area, surface, cx);
+            }
+        }
+
         if let Some(completion) = self.completion.as_mut() {
             completion.render(area, surface, cx);
+        }
+
+        if let Some(explore) = self.explorer.as_mut() {
+            if explore.is_focus() {
+                let area = if use_bufferline {
+                    area.clip_top(1)
+                } else {
+                    area
+                };
+                explore.render(area, surface, cx);
+            }
         }
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if let Some(terminal) = &self.bottom_terminal {
+            if terminal.is_focus() && terminal.is_opened() && !terminal.has_exited() {
+                let panel_h = terminal.panel_height();
+                let term_y = _area.y + _area.height.saturating_sub(1 + panel_h + 1);
+                let term_area = Rect::new(_area.x, term_y + 1, _area.width, panel_h);
+                let cursor = terminal.cursor(term_area, editor);
+                if cursor.0.is_some() {
+                    return cursor;
+                }
+            }
+        }
+        if let Some(explore) = &self.explorer {
+            if explore.is_focus() {
+                let cursor = explore.cursor(_area, editor);
+                if cursor.0.is_some() {
+                    return cursor;
+                }
+            }
+        }
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {

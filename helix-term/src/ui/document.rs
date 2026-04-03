@@ -9,6 +9,7 @@ use helix_core::{visual_offset_from_block, Position, RopeSlice};
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::editor::{WhitespaceConfig, WhitespaceRenderValue};
 use helix_view::graphics::Rect;
+use helix_view::icons::ICONS;
 use helix_view::theme::Style;
 use helix_view::view::ViewPosition;
 use helix_view::{Document, Theme};
@@ -38,6 +39,8 @@ pub fn render_document(
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     decorations: DecorationManager,
+    folded_line_ranges: &[(usize, usize)],
+    scope_range: Option<(usize, usize, usize)>,
 ) {
     let mut renderer = TextRenderer::new(
         surface,
@@ -46,6 +49,7 @@ pub fn render_document(
         Position::new(offset.vertical_offset, offset.horizontal_offset),
         viewport,
     );
+    renderer.scope_range = scope_range;
     render_text(
         &mut renderer,
         doc.text().slice(..),
@@ -56,6 +60,7 @@ pub fn render_document(
         overlay_highlights,
         theme,
         decorations,
+        folded_line_ranges,
     )
 }
 
@@ -70,6 +75,7 @@ pub fn render_text(
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     mut decorations: DecorationManager,
+    folded_line_ranges: &[(usize, usize)],
 ) {
     let row_off = visual_offset_from_block(text, anchor, anchor, text_fmt, text_annotations)
         .0
@@ -91,6 +97,22 @@ pub fn render_text(
     let mut last_line_indent_level = 0;
     let mut reached_view_top = false;
 
+    // Track visual row offset due to folded lines (in visual rows, not document lines)
+    let mut fold_row_offset: usize = 0;
+    // Track which fold ranges we've already rendered placeholders for
+    let mut fold_placeholder_rendered: Vec<bool> = vec![false; folded_line_ranges.len()];
+    // Track the first visual row of the current fold being skipped
+    let mut fold_visual_start: Option<usize> = None;
+    // Track the last visual row seen inside a fold
+    let mut fold_last_visual_row: usize = 0;
+
+    /// Check if a document line falls within a folded (hidden) range
+    fn is_line_folded(line: usize, folded_line_ranges: &[(usize, usize)]) -> Option<usize> {
+        folded_line_ranges
+            .iter()
+            .position(|&(start, end)| line >= start && line <= end)
+    }
+
     loop {
         let Some(mut grapheme) = formatter.next() else {
             break;
@@ -101,6 +123,53 @@ pub fn render_text(
             continue;
         }
         grapheme.visual_pos.row -= row_off;
+
+        // Check if this grapheme's line is inside a folded region
+        if let Some(fold_idx) = is_line_folded(grapheme.line_idx, folded_line_ranges) {
+            // Advance highlighters past folded content to keep them in sync
+            while grapheme.char_idx >= syntax_highlighter.pos {
+                syntax_highlighter.advance();
+            }
+            while grapheme.char_idx >= overlay_highlighter.pos {
+                overlay_highlighter.advance();
+            }
+
+            // Track the visual row span of this fold
+            if fold_visual_start.is_none() {
+                fold_visual_start = Some(grapheme.visual_pos.row);
+            }
+            fold_last_visual_row = grapheme.visual_pos.row;
+
+            // Render fold placeholder once per fold range
+            if !fold_placeholder_rendered[fold_idx] {
+                let (fold_start, fold_end) = folded_line_ranges[fold_idx];
+                let hidden_lines = fold_end - fold_start + 1;
+                fold_placeholder_rendered[fold_idx] = true;
+
+                // Render fold placeholder at the end of the header line
+                let placeholder = format!(" ... ({} lines)", hidden_lines);
+                let fold_style = theme
+                    .try_get("ui.text.info")
+                    .unwrap_or_else(|| renderer.text_style);
+
+                // Use the header line's already-rendered visual position
+                if last_line_pos.visual_line != u16::MAX {
+                    let x = renderer.viewport.x + last_line_end as u16;
+                    let y = last_line_pos.visual_line;
+                    renderer.set_string(x, y, &placeholder, fold_style);
+                }
+            }
+            continue;
+        }
+
+        // When we exit a fold, compute the actual visual rows consumed
+        if let Some(start_row) = fold_visual_start.take() {
+            fold_row_offset += fold_last_visual_row - start_row + 1;
+        }
+
+        // Adjust visual position by subtracting folded visual rows
+        grapheme.visual_pos.row = grapheme.visual_pos.row.saturating_sub(fold_row_offset);
+
         if !reached_view_top {
             decorations.prepare_for_rendering(grapheme.char_idx);
             reached_view_top = true;
@@ -119,7 +188,7 @@ pub fn render_text(
             // in that case we don't need to draw indent guides/virtual text
             if last_line_pos.doc_line != usize::MAX {
                 // draw indent guides for the last line
-                renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+                renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line, last_line_pos.doc_line);
                 is_in_indent_area = true;
                 decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
             }
@@ -166,9 +235,10 @@ pub fn render_text(
             grapheme.visual_pos,
         );
         last_line_end = grapheme.visual_pos.col + grapheme_width;
+
     }
 
-    renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+    renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line, last_line_pos.doc_line);
     decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
 }
 
@@ -188,6 +258,9 @@ pub struct TextRenderer<'a> {
     pub indent_width: u16,
     pub starting_indent: usize,
     pub draw_indent_guides: bool,
+    pub scope_only: bool,
+    /// (indent_col, start_line, end_line) — the scope range to draw a single guide for
+    pub scope_range: Option<(usize, usize, usize)>,
     pub viewport: Rect,
     pub offset: Position,
 }
@@ -206,38 +279,41 @@ impl<'a> TextRenderer<'a> {
         viewport: Rect,
     ) -> TextRenderer<'a> {
         let editor_config = doc.config.load();
-        let WhitespaceConfig {
-            render: ws_render,
-            characters: ws_chars,
-        } = &editor_config.whitespace;
+
+        let WhitespaceConfig { render } = &editor_config.whitespace;
 
         let tab_width = doc.tab_width();
-        let tab = if ws_render.tab() == WhitespaceRenderValue::All {
-            std::iter::once(ws_chars.tab)
-                .chain(std::iter::repeat_n(ws_chars.tabpad, tab_width - 1))
+
+        let icons = ICONS.load();
+
+        let whitespace = icons.ui().r#virtual();
+
+        let tab = if render.tab() == WhitespaceRenderValue::All {
+            std::iter::once(whitespace.tab())
+                .chain(std::iter::repeat(whitespace.tabpad()).take(tab_width - 1))
                 .collect()
         } else {
             " ".repeat(tab_width)
         };
         let virtual_tab = " ".repeat(tab_width);
-        let newline = if ws_render.newline() == WhitespaceRenderValue::All {
-            ws_chars.newline.into()
+        let newline = if render.newline() == WhitespaceRenderValue::All {
+            whitespace.newline().into()
         } else {
             " ".to_owned()
         };
 
-        let space = if ws_render.space() == WhitespaceRenderValue::All {
-            ws_chars.space.into()
+        let space = if render.space() == WhitespaceRenderValue::All {
+            whitespace.space().into()
         } else {
             " ".to_owned()
         };
-        let nbsp = if ws_render.nbsp() == WhitespaceRenderValue::All {
-            ws_chars.nbsp.into()
+        let nbsp = if render.nbsp() == WhitespaceRenderValue::All {
+            whitespace.nbsp().into()
         } else {
             " ".to_owned()
         };
-        let nnbsp = if ws_render.nnbsp() == WhitespaceRenderValue::All {
-            ws_chars.nnbsp.into()
+        let nnbsp = if render.nnbsp() == WhitespaceRenderValue::All {
+            whitespace.nnbsp().into()
         } else {
             " ".to_owned()
         };
@@ -267,10 +343,13 @@ impl<'a> TextRenderer<'a> {
             ),
             text_style,
             draw_indent_guides: editor_config.indent_guides.render,
+            scope_only: editor_config.indent_guides.scope,
+            scope_range: None,
             viewport,
             offset,
         }
     }
+
     /// Draws a single `grapheme` at the current render position with a specified `style`.
     pub fn draw_decoration_grapheme(
         &mut self,
@@ -390,7 +469,7 @@ impl<'a> TextRenderer<'a> {
     /// Overlay indentation guides ontop of a rendered line
     /// The indentation level is computed in `draw_lines`.
     /// Therefore this function must always be called afterwards.
-    pub fn draw_indent_guides(&mut self, indent_level: usize, mut row: u16) {
+    pub fn draw_indent_guides(&mut self, indent_level: usize, mut row: u16, doc_line: usize) {
         if !self.draw_indent_guides || self.offset.row > row as usize {
             return;
         }
@@ -403,6 +482,30 @@ impl<'a> TextRenderer<'a> {
             // indent might be a bit after offset.col
             self.offset.col + self.viewport.width as usize + (self.indent_width as usize - 1),
         ) / self.indent_width as usize;
+
+        if self.scope_only {
+            if let Some((scope_col, scope_start, scope_end)) = self.scope_range {
+                // Only draw within the cursor's scope line range
+                if doc_line < scope_start || doc_line > scope_end {
+                    return;
+                }
+                let scope_indent = scope_col / self.indent_width as usize;
+                if scope_indent >= self.starting_indent && scope_indent < end_indent {
+                    let x = (self.viewport.x as usize
+                        + (scope_indent * self.indent_width as usize)
+                        - self.offset.col) as u16;
+                    let y = self.viewport.y + row;
+                    debug_assert!(self.surface.in_bounds(x, y));
+                    self.surface.set_string(
+                        x,
+                        y,
+                        &self.indent_guide_char,
+                        self.indent_guide_style,
+                    );
+                }
+            }
+            return;
+        }
 
         for i in self.starting_indent..end_indent {
             let x = (self.viewport.x as usize + (i * self.indent_width as usize) - self.offset.col)

@@ -30,19 +30,22 @@ impl From<tui::text::Text<'static>> for Text {
 }
 
 impl Component for Text {
-    fn render(&mut self, area: Rect, surface: &mut Surface, _cx: &mut Context) {
+    fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         use tui::widgets::{Paragraph, Widget, Wrap};
 
-        let par = Paragraph::new(&self.contents).wrap(Wrap { trim: false });
-        // .scroll(x, y) offsets
+        let par = Paragraph::new(&self.contents)
+            .wrap(Wrap { trim: false })
+            .scroll((cx.scroll.unwrap_or_default() as u16, 0));
 
         par.render(area, surface);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
         if viewport != self.viewport {
-            let width = std::cmp::min(self.contents.width() as u16, viewport.0);
-            let height = std::cmp::min(self.contents.height() as u16, viewport.1);
+            let max_text_width = viewport.0;
+            let (width, height) = required_size(&self.contents, max_text_width);
+            let width = width.min(viewport.0);
+            let height = height.min(viewport.1);
             self.size = (width, height);
             self.viewport = viewport;
         }

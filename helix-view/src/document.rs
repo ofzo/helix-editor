@@ -43,6 +43,7 @@ use helix_core::{
     ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
 };
 
+use crate::icons::{Icons, ICONS};
 use crate::{
     editor::Config,
     events::{DocumentDidChange, SelectionDidChange},
@@ -159,6 +160,7 @@ pub struct Document {
 
     path: Option<PathBuf>,
     relative_path: OnceCell<Option<PathBuf>>,
+    remote_url: Option<String>,
     encoding: &'static encoding::Encoding,
     has_bom: bool,
 
@@ -225,6 +227,14 @@ pub struct Document {
     // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
     // `ArcSwap` directly.
     syn_loader: Arc<ArcSwap<syntax::Loader>>,
+    pub repo_root_dir: Arc<PathBuf>,
+
+    /// Cached fold ranges from tree-sitter @fold queries
+    pub fold_ranges: Vec<helix_core::fold::FoldRange>,
+    /// Start lines of currently collapsed folds
+    pub folded_lines: std::collections::HashSet<usize>,
+    /// Whether fold ranges need recomputation
+    pub folds_outdated: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -726,6 +736,7 @@ impl Document {
             active_snippet: None,
             path: None,
             relative_path: OnceCell::new(),
+            remote_url: None,
             encoding,
             has_bom,
             text,
@@ -764,6 +775,10 @@ impl Document {
             previous_diagnostic_id: None,
             pull_diagnostic_controller: TaskController::new(),
             document_link_controller: TaskController::new(),
+            repo_root_dir: Arc::new(PathBuf::from("/")),
+            fold_ranges: Vec::new(),
+            folded_lines: std::collections::HashSet::new(),
+            folds_outdated: true,
         }
     }
 
@@ -785,6 +800,7 @@ impl Document {
         detect_language: bool,
         config: Arc<dyn DynAccess<Config>>,
         syn_loader: Arc<ArcSwap<syntax::Loader>>,
+        provider_registry: &DiffProviderRegistry,
     ) -> Result<Self, DocumentOpenError> {
         // If the path is not a regular file (e.g.: /dev/random) it should not be opened.
         if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
@@ -821,6 +837,8 @@ impl Document {
 
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
+
+        doc.repo_root_dir = provider_registry.get_repo_root(path);
 
         Ok(doc)
     }
@@ -1491,6 +1509,10 @@ impl Document {
             }
         }
 
+        // Invalidate fold state on edit
+        self.folds_outdated = true;
+        self.folded_lines.clear();
+
         // TODO: all of that should likely just be hooks
         // start computing the diff in parallel
         if let Some(diff_handle) = &self.diff_handle {
@@ -1946,6 +1968,132 @@ impl Document {
         }
     }
 
+    /// Recompute fold ranges from tree-sitter if outdated.
+    pub fn ensure_fold_ranges(&mut self) {
+        if !self.folds_outdated {
+            return;
+        }
+        self.folds_outdated = false;
+
+        let loader = self.syn_loader.load();
+        if let Some(syntax) = &self.syntax {
+            self.fold_ranges =
+                helix_core::fold::compute_fold_ranges(syntax, self.text.slice(..), &loader);
+        } else {
+            self.fold_ranges.clear();
+        }
+    }
+
+    /// Find the fold range at a given line (either starting at or containing the line).
+    /// When the line is inside multiple nested folds, returns the innermost one.
+    pub fn fold_range_at_line(&self, line: usize) -> Option<&helix_core::fold::FoldRange> {
+        // First try exact match on start_line
+        if let Ok(idx) = self.fold_ranges.binary_search_by_key(&line, |r| r.start_line) {
+            return Some(&self.fold_ranges[idx]);
+        }
+        // Find the innermost fold containing this line (last match has largest start_line)
+        self.fold_ranges
+            .iter()
+            .filter(|r| r.start_line <= line && line <= r.end_line)
+            .last()
+    }
+
+    /// Toggle the fold at the given line. Returns the fold start line if toggled.
+    pub fn toggle_fold_at_line(&mut self, line: usize) -> Option<usize> {
+        let fold_start = self.fold_range_at_line(line)?.start_line;
+
+        if self.folded_lines.contains(&fold_start) {
+            self.folded_lines.remove(&fold_start);
+        } else {
+            self.folded_lines.insert(fold_start);
+        }
+        Some(fold_start)
+    }
+
+    /// Returns false if the line is inside an active fold's hidden region.
+    pub fn is_line_visible(&self, line: usize) -> bool {
+        for &fold_start in &self.folded_lines {
+            if let Some(range) = self.fold_range_at_line(fold_start) {
+                if line > range.start_line && line <= range.end_line {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Unfold any fold whose hidden region contains the given line, making it visible.
+    pub fn ensure_line_visible(&mut self, line: usize) {
+        let to_remove: Vec<usize> = self
+            .folded_lines
+            .iter()
+            .copied()
+            .filter(|&fold_start| {
+                if let Some(range) = self.fold_range_at_line(fold_start) {
+                    line > range.start_line && line <= range.end_line
+                } else {
+                    false
+                }
+            })
+            .collect();
+        for fold_start in to_remove {
+            self.folded_lines.remove(&fold_start);
+        }
+    }
+
+    /// Skip over folded lines going forward, returning the next visible line.
+    pub fn next_visible_line(&self, line: usize) -> usize {
+        let total_lines = self.text.len_lines();
+        let mut current = line;
+        while current < total_lines && !self.is_line_visible(current) {
+            current += 1;
+        }
+        current.min(total_lines.saturating_sub(1))
+    }
+
+    /// Skip over folded lines going backward, returning the previous visible line.
+    pub fn prev_visible_line(&self, line: usize) -> usize {
+        let mut current = line;
+        while current > 0 && !self.is_line_visible(current) {
+            current -= 1;
+        }
+        current
+    }
+
+    /// Count the total number of hidden (folded) document lines between two document lines.
+    pub fn count_folded_lines_in_range(&self, from_line: usize, to_line: usize) -> usize {
+        if self.folded_lines.is_empty() || from_line >= to_line {
+            return 0;
+        }
+        self.folded_line_ranges()
+            .iter()
+            .map(|&(start, end)| {
+                let clamped_start = start.max(from_line);
+                let clamped_end = end.min(to_line);
+                if clamped_start <= clamped_end {
+                    clamped_end - clamped_start + 1
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    /// Get the sorted list of active folded line ranges (hidden regions) for rendering.
+    /// Returns pairs of (first_hidden_line, last_hidden_line).
+    pub fn folded_line_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges: Vec<(usize, usize)> = self
+            .folded_lines
+            .iter()
+            .filter_map(|&start| {
+                self.fold_range_at_line(start)
+                    .map(|r| (r.start_line + 1, r.end_line))
+            })
+            .collect();
+        ranges.sort_by_key(|r| r.0);
+        ranges
+    }
+
     pub fn version_control_head(&self) -> Option<Arc<Box<str>>> {
         self.version_control_head.as_ref().map(|a| a.load_full())
     }
@@ -2002,6 +2150,14 @@ impl Document {
     /// File path on disk.
     pub fn path(&self) -> Option<&PathBuf> {
         self.path.as_ref()
+    }
+
+    pub fn remote_url(&self) -> Option<&str> {
+        self.remote_url.as_deref()
+    }
+
+    pub fn set_remote_url(&mut self, url: Option<String>) {
+        self.remote_url = url;
     }
 
     /// File path as a URL.
@@ -2061,6 +2217,9 @@ impl Document {
     }
 
     pub fn display_name(&self) -> Cow<'_, str> {
+        if let Some(ref url) = self.remote_url {
+            return Cow::Borrowed(url.as_str());
+        }
         self.relative_path()
             .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
     }
@@ -2321,8 +2480,10 @@ impl Document {
             .unwrap_or(40);
         let wrap_indicator = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.wrap_indicator.clone())
-            .or_else(|| config.soft_wrap.wrap_indicator.clone())
-            .unwrap_or_else(|| "↪ ".into());
+            .unwrap_or_else(|| {
+                let icons: arc_swap::access::DynGuard<Icons> = ICONS.load();
+                icons.ui().r#virtual().wrap().to_string()
+            });
         let tab_width = self.tab_width() as u16;
         TextFormat {
             soft_wrap: enable_soft_wrap && viewport_width > 10,

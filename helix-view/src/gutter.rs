@@ -5,6 +5,7 @@ use helix_core::syntax::config::LanguageServerFeature;
 use crate::{
     editor::GutterType,
     graphics::{Style, UnderlineStyle},
+    icons::ICONS,
     Document, Editor, Theme, View,
 };
 
@@ -32,6 +33,7 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers(editor, doc, view, theme, is_focused),
             GutterType::Spacer => padding(editor, doc, view, theme, is_focused),
             GutterType::Diff => diff(editor, doc, view, theme, is_focused),
+            GutterType::Folds => fold_indicators(editor, doc, view, theme, is_focused),
         }
     }
 
@@ -41,12 +43,12 @@ impl GutterType {
             GutterType::LineNumbers => line_numbers_width(view, doc),
             GutterType::Spacer => 1,
             GutterType::Diff => 1,
+            GutterType::Folds => 1,
         }
     }
 }
 
 pub fn diagnostic<'doc>(
-    _editor: &'doc Editor,
     doc: &'doc Document,
     _view: &View,
     theme: &Theme,
@@ -74,15 +76,20 @@ pub fn diagnostic<'doc>(
                                 .any(|ls| ls.id() == id)
                         })
                 });
-            diagnostics_on_line.max_by_key(|d| d.severity).map(|d| {
-                write!(out, "●").ok();
-                match d.severity {
-                    Some(Severity::Error) => error,
-                    Some(Severity::Warning) | None => warning,
-                    Some(Severity::Info) => info,
-                    Some(Severity::Hint) => hint,
-                }
-            })
+
+            diagnostics_on_line
+                .max_by_key(|d| d.severity)
+                .map(move |d| {
+                    let icons = ICONS.load();
+                    let (style, symbol) = match d.severity {
+                        Some(Severity::Error) => (error, icons.diagnostic().error()),
+                        Some(Severity::Warning) | None => (warning, icons.diagnostic().warning()),
+                        Some(Severity::Info) => (info, icons.diagnostic().info()),
+                        Some(Severity::Hint) => (hint, icons.diagnostic().hint()),
+                    };
+                    out.push_str(symbol);
+                    style
+                })
         },
     )
 }
@@ -97,6 +104,7 @@ pub fn diff<'doc>(
     let added = theme.get("diff.plus.gutter");
     let deleted = theme.get("diff.minus.gutter");
     let modified = theme.get("diff.delta.gutter");
+    // let last_line_in_view = view.estimate_last_doc_line(doc);
     if let Some(diff_handle) = doc.diff_handle() {
         let hunks = diff_handle.load();
         let mut hunk_i = 0;
@@ -119,24 +127,62 @@ pub fn diff<'doc>(
                     return None;
                 }
 
+                let icons = ICONS.load();
+
                 let (icon, style) = if hunk.is_pure_insertion() {
-                    ("▍", added)
+                    (icons.ui().gutter().added(), added)
                 } else if hunk.is_pure_removal() {
                     if !first_visual_line {
                         return None;
                     }
-                    ("▔", deleted)
+                    (icons.ui().gutter().removed(), deleted)
                 } else {
-                    ("▍", modified)
+                    (icons.ui().gutter().modified(), modified)
                 };
 
-                write!(out, "{}", icon).unwrap();
+                write!(out, "{icon}").unwrap();
+
                 Some(style)
             },
         )
     } else {
         Box::new(move |_, _, _, _| None)
     }
+}
+
+pub fn fold_indicators<'doc>(
+    _editor: &'doc Editor,
+    doc: &'doc Document,
+    _view: &View,
+    theme: &Theme,
+    _is_focused: bool,
+) -> GutterFn<'doc> {
+    let fold_style = theme.try_get("ui.gutter.fold").unwrap_or_else(|| theme.get("ui.text.info"));
+    let fold_ranges = &doc.fold_ranges;
+    let folded_lines = &doc.folded_lines;
+
+    Box::new(
+        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+            if !first_visual_line {
+                return None;
+            }
+            // Check if this line is a fold start
+            let is_fold_start = fold_ranges
+                .binary_search_by_key(&line, |r| r.start_line)
+                .is_ok();
+            if !is_fold_start {
+                write!(out, " ").unwrap();
+                return Some(fold_style);
+            }
+
+            if folded_lines.contains(&line) {
+                write!(out, "▸").unwrap();
+            } else {
+                write!(out, "▾").unwrap();
+            }
+            Some(fold_style)
+        },
+    )
 }
 
 pub fn line_numbers<'doc>(
@@ -264,7 +310,13 @@ pub fn breakpoints<'doc>(
                 breakpoint_style
             };
 
-            let sym = if breakpoint.verified { "●" } else { "◯" };
+            let icons = ICONS.load();
+
+            let sym = if breakpoint.verified {
+                icons.dap().verified()
+            } else {
+                icons.dap().unverified()
+            };
             write!(out, "{}", sym).unwrap();
             Some(style)
         },
@@ -299,8 +351,9 @@ fn execution_pause_indicator<'doc>(
                 return None;
             }
 
-            let sym = "▶";
-            write!(out, "{}", sym).unwrap();
+            let icons = ICONS.load();
+
+            write!(out, "{}", icons.dap().play()).unwrap();
             Some(style)
         },
     )
@@ -313,7 +366,7 @@ pub fn diagnostics_or_breakpoints<'doc>(
     theme: &Theme,
     is_focused: bool,
 ) -> GutterFn<'doc> {
-    let mut diagnostics = diagnostic(editor, doc, view, theme, is_focused);
+    let mut diagnostics = diagnostic(doc, view, theme, is_focused);
     let mut breakpoints = breakpoints(editor, doc, view, theme, is_focused);
     let mut execution_pause_indicator = execution_pause_indicator(editor, doc, theme, is_focused);
 

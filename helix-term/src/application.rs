@@ -156,10 +156,14 @@ impl Application {
         } else if !args.files.is_empty() {
             let mut files_it = args.files.into_iter().peekable();
 
-            // If the first file is a directory, skip it and open a picker
-            if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
-                let picker = ui::file_picker(&editor, first);
-                compositor.push(Box::new(overlaid(picker)));
+            // If the first file is a directory, open the explorer sidebar
+            if let Some((_first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
+                if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+                    match ui::Explorer::from_editor(&editor) {
+                        Ok(explore) => editor_view.explorer = Some(explore),
+                        Err(err) => editor.set_error(format!("{}", err)),
+                    }
+                }
             }
 
             // If there are any more files specified, open them
@@ -202,6 +206,11 @@ impl Application {
                         // NOTE: this isn't necessarily true anymore. If
                         // `--vsplit` or `--hsplit` are used, the file which is
                         // opened last is focused on.
+                        // If this file was downloaded from an scp:// URL, tag the document.
+                        if let Some(remote_url) = args.remote_urls.get(&file) {
+                            let doc = doc_mut!(editor, &doc_id);
+                            doc.set_remote_url(Some(remote_url.clone()));
+                        }
                         let view_id = editor.tree.focus;
                         let doc = doc_mut!(editor, &doc_id);
                         let selection = pos
@@ -233,6 +242,9 @@ impl Application {
             }
         } else if stdin().is_terminal() || cfg!(feature = "integration") {
             editor.new_file(Action::VerticalSplit);
+            let cwd = std::env::current_dir().unwrap_or_else(|_| "./".into());
+            let picker = ui::file_picker(&editor, cwd);
+            compositor.push(Box::new(overlaid(picker)));
         } else {
             editor
                 .new_file_from_stdin(Action::VerticalSplit)
@@ -643,11 +655,35 @@ impl Application {
 
         self.editor
             .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
-        // TODO: fix being overwritten by lsp
-        self.editor.set_status(format!(
-            "'{}' written, {lines}L {size}",
-            get_relative_path(&doc_save_event.path).to_string_lossy(),
-        ));
+
+        // If the document has a remote URL, upload after save.
+        let remote_url = self
+            .editor
+            .document(doc_save_event.doc_id)
+            .and_then(|doc| doc.remote_url().map(|s| s.to_string()));
+
+        if let Some(remote_url) = remote_url {
+            let local_path = doc_save_event.path.clone();
+            self.editor.set_status(format!(
+                "'{}' written, {lines}L {size} — uploading to {remote_url}…",
+                get_relative_path(&doc_save_event.path).to_string_lossy(),
+            ));
+            self.jobs.callback(async move {
+                let parsed = helix_view::scp::ScpUrl::parse(&remote_url)
+                    .ok_or_else(|| anyhow::anyhow!("invalid scp URL: {remote_url}"))?;
+                helix_view::scp::upload(&local_path, &parsed).await?;
+                let url = remote_url.clone();
+                Ok(crate::job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+                    editor.set_status(format!("uploaded to {url}"));
+                })))
+            });
+        } else {
+            // TODO: fix being overwritten by lsp
+            self.editor.set_status(format!(
+                "'{}' written, {lines}L {size}",
+                get_relative_path(&doc_save_event.path).to_string_lossy(),
+            ));
+        }
     }
 
     #[inline(always)]

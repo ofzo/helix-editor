@@ -269,6 +269,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
+    title: Option<String>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -394,6 +395,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
+            title: None,
         }
     }
 
@@ -648,6 +650,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                                 false,
                                 editor.config.clone(),
                                 editor.syn_loader.clone(),
+                                &editor.diff_providers,
                             )
                             .or(Err(std::io::Error::new(
                                 std::io::ErrorKind::NotFound,
@@ -699,12 +702,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(area, background);
 
-        const BLOCK: Block<'_> = Block::bordered();
+        let title = self.title.clone();
+        let binding = title.unwrap_or_default();
+        let block: Block<'_> = Block::bordered().title(binding.as_ref());
 
         // calculate the inner area inside the box
-        let inner = BLOCK.inner(area);
+        let inner = block.inner(area);
 
-        BLOCK.render(area, surface);
+        block.render(area, surface);
 
         // -- Render the input bar:
 
@@ -735,10 +740,18 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let header_style = cx.editor.theme.get("ui.picker.header");
+        let borders = BorderType::line_symbols(BorderType::Rounded);
         for x in inner.left()..inner.right() {
             if let Some(cell) = surface.get_mut(x, inner.y + 1) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
+            }
+        }
+        if self.columns.len() > 1 {
+            for x in inner.left()..inner.right() {
+                if let Some(cell) = surface.get_mut(x, inner.y + 2) {
+                    cell.set_symbol(" ").set_style(header_style);
+                }
             }
         }
 
@@ -838,7 +851,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
-            .highlight_symbol(" > ")
+            .highlight_symbol(" ")
             .column_spacing(1)
             .widths(&self.widths);
 
@@ -1019,6 +1032,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 overlay_highlights,
                 &cx.editor.theme,
                 decorations,
+                &[],
+                None,
             );
         }
     }
@@ -1037,7 +1052,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview {
-            area.width / 2
+            area.width / 3
         } else {
             area.width
         };

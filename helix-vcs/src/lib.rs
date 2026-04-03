@@ -18,7 +18,31 @@ pub use diff::{DiffHandle, Hunk};
 
 mod status;
 
-pub use status::FileChange;
+pub use status::{FileChange, FileChangeStatus};
+
+/// Check if a path is ignored by gitignore rules
+/// Returns true if the path is ignored, false otherwise
+/// If git is not available or the path is not in a git repository,
+/// returns false (not ignored)
+pub fn is_ignored(path: &Path) -> bool {
+    #[cfg(feature = "git")]
+    {
+        return git::is_ignored(path);
+    }
+    #[cfg(not(feature = "git"))]
+    return false;
+}
+
+/// Batch check if paths are ignored by gitignore rules.
+/// Much faster than calling `is_ignored()` per file — uses a single subprocess.
+pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
+    #[cfg(feature = "git")]
+    {
+        return git::are_ignored(paths);
+    }
+    #[cfg(not(feature = "git"))]
+    return vec![false; paths.len()];
+}
 
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
@@ -75,6 +99,15 @@ impl DiffProviderRegistry {
             }
         });
     }
+    pub fn get_repo_root(&self, cwd: &Path) -> Arc<PathBuf> {
+        self.providers
+            .iter()
+            .find_map(|provider| match provider.get_repo_root_dir(&cwd) {
+                Ok(res) => Some(res),
+                Err(_) => None,
+            })
+            .unwrap_or_else(|| Arc::new(PathBuf::from("/")))
+    }
 }
 
 impl Default for DiffProviderRegistry {
@@ -127,6 +160,14 @@ impl DiffProvider {
             #[cfg(feature = "git")]
             Self::Git => git::for_each_changed_file(cwd, f),
             Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn get_repo_root_dir(&self, cwd: &Path) -> Result<Arc<PathBuf>> {
+        match self {
+            #[cfg(feature = "git")]
+            DiffProvider::Git => git::get_repo_root_dir(cwd),
+            DiffProvider::None => bail!("No diff support compiled in"),
         }
     }
 }
