@@ -937,7 +937,7 @@ fn render_tree<'a, T: TreeViewItem>(
                 Span::styled(" ", indicator_style)
             }
         } else {
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
             let path = tree.item.path();
             if let Some(icon) = icons.fs().from_path(&path) {
                 let icon_color = if is_selected { None } else { icon.color() };
@@ -986,7 +986,7 @@ fn render_tree<'a, T: TreeViewItem>(
             if dimmed { s.add_modifier(helix_view::graphics::Modifier::DIM) } else { s }
         };
 
-        let icons = ICONS.load();
+        let icons = ICONS.load_full();
         let icon_str = match status {
             FileChangeStatus::Untracked => icons.vcs().added(),
             FileChangeStatus::Modified => icons.vcs().modified(),

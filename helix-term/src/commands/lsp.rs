@@ -253,7 +253,7 @@ fn diag_picker(
         ui::PickerColumn::new(
             "severity",
             |item: &PickerDiagnostic, styles: &DiagnosticStyles| {
-                let icons = ICONS.load();
+                let icons = ICONS.load_full();
 
                 match item.diag.severity {
                     Some(DiagnosticSeverity::HINT) => {
@@ -425,7 +425,7 @@ pub fn symbol_picker(cx: &mut Context) {
                 ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
                     let name = display_symbol_kind(item.symbol.kind);
 
-                    let icons = ICONS.load();
+                    let icons = ICONS.load_full();
 
                     if let Some(icon) = icons.kind().get(name) {
                         icon.to_span_with(|icon| format!("{icon} {name}")).into()
@@ -551,7 +551,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
         ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
             let name = display_symbol_kind(item.symbol.kind);
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             if let Some(icon) = icons.kind().get(name) {
                 icon.to_span_with(|icon| format!("{icon} {name}")).into()

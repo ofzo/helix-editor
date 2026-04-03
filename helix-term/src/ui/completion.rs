@@ -79,7 +79,7 @@ impl menu::Item for CompletionItem {
                     })
                     .and_then(|c| Color::from_hex(c).ok())
                     .map_or("color".into(), |color| {
-                        let icons = ICONS.load();
+                        let icons = ICONS.load_full();
                         Spans::from(vec![
                             Span::raw("color "),
                             Span::styled(
@@ -106,7 +106,7 @@ impl menu::Item for CompletionItem {
             CompletionItem::Other(core::CompletionItem { kind, .. }) => kind.as_ref().into(),
         };
 
-        let icons = ICONS.load();
+        let icons = ICONS.load_full();
 
         let name = &kind.0[0].content;
         let is_folder = kind.0[0].content == "folder";

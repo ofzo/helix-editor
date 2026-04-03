@@ -80,7 +80,7 @@ pub fn diagnostic<'doc>(
             diagnostics_on_line
                 .max_by_key(|d| d.severity)
                 .map(move |d| {
-                    let icons = ICONS.load();
+                    let icons = ICONS.load_full();
                     let (style, symbol) = match d.severity {
                         Some(Severity::Error) => (error, icons.diagnostic().error()),
                         Some(Severity::Warning) | None => (warning, icons.diagnostic().warning()),
@@ -127,7 +127,7 @@ pub fn diff<'doc>(
                     return None;
                 }
 
-                let icons = ICONS.load();
+                let icons = ICONS.load_full();
 
                 let (icon, style) = if hunk.is_pure_insertion() {
                     (icons.ui().gutter().added(), added)
@@ -310,7 +310,7 @@ pub fn breakpoints<'doc>(
                 breakpoint_style
             };
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             let sym = if breakpoint.verified {
                 icons.dap().verified()
@@ -351,7 +351,7 @@ fn execution_pause_indicator<'doc>(
                 return None;
             }
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             write!(out, "{}", icons.dap().play()).unwrap();
             Some(style)

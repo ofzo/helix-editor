@@ -234,7 +234,7 @@ where
                 counts
             });
 
-    let icons = ICONS.load();
+    let icons = ICONS.load_full();
 
     for sev in &context.editor.config().statusline.diagnostics {
         match sev {
@@ -319,7 +319,7 @@ where
         return;
     }
 
-    let icons = ICONS.load();
+    let icons = ICONS.load_full();
 
     let icon = icons.ui().workspace();
 
@@ -505,7 +505,7 @@ fn render_file_type<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let icons = ICONS.load();
+    let icons = ICONS.load_full();
 
     let lang = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
 
@@ -619,7 +619,7 @@ where
 {
     let style = context.editor.theme.get("ui.statusline.separator");
 
-    let icons = ICONS.load();
+    let icons = ICONS.load_full();
 
     let separator = icons.ui().statusline().separator().to_string();
 
@@ -640,7 +640,7 @@ where
     let head = context.doc.version_control_head().unwrap_or_default();
 
     if !head.is_empty() {
-        let icons = ICONS.load();
+        let icons = ICONS.load_full();
 
         let vcs = match icons.vcs().branch() {
             Some(icon) => format!(" {icon} {head} "),

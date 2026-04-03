@@ -358,7 +358,7 @@ impl EditorView {
             .filter(|ruler| ruler < &viewport.width)
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
             .for_each(|area| {
-                let icons = ICONS.load();
+                let icons = ICONS.load_full();
                 for y in area.y..area.height {
                     surface.set_string(area.x, y, icons.ui().r#virtual().ruler(), style);
                 }
@@ -805,7 +805,7 @@ impl EditorView {
                 bufferline_inactive
             };
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             let lang = doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
 

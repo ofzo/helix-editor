@@ -108,7 +108,7 @@ impl Renderer<'_, '_> {
             return 0;
         }
 
-        let icons = ICONS.load();
+        let icons = ICONS.load_full();
 
         let symbol = match diag.severity() {
             Severity::Hint => icons.diagnostic().hint(),

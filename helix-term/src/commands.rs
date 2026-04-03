@@ -2620,7 +2620,7 @@ fn global_search(cx: &mut Context) {
 
             let mut spans = Vec::with_capacity(5);
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             if let Some(icon) = icons.fs().from_path(&path) {
                 spans.push(icon.to_span_with(|icon| format!("{icon} ")));
@@ -2631,7 +2631,9 @@ fn global_search(cx: &mut Context) {
                 Span::raw(filename),
                 Span::styled(":", config.colon_style),
                 Span::styled((item.line_start + 1).to_string(), config.number_style),
-            ]))
+            ]);
+
+            Cell::from(Spans::from(spans))
         }),
         PickerColumn::hidden("contents"),
     ];
@@ -3483,7 +3485,7 @@ fn buffer_picker(cx: &mut Context) {
                 .and_then(Path::to_str)
                 .unwrap_or(SCRATCH_BUFFER_NAME);
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             let mut spans = Vec::with_capacity(2);
 
@@ -3573,7 +3575,7 @@ fn jumplist_picker(cx: &mut Context) {
                 .and_then(Path::to_str)
                 .unwrap_or(SCRATCH_BUFFER_NAME);
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             let mut spans = Vec::with_capacity(2);
 
@@ -3653,7 +3655,7 @@ fn changed_file_picker(cx: &mut Context) {
 
     let columns = [
         PickerColumn::new("change", |change: &FileChange, data: &FileChangeData| {
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
             match change {
                 FileChange::Untracked { .. } => Span::styled(
                     match icons.vcs().added() {

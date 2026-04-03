@@ -94,8 +94,6 @@ dashmap = "6.0"
 alacritty_terminal = { workspace = true }
 parking_lot = { workspace = true }
 
-parking_lot.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 crossterm = { version = "0.28", features = ["event-stream"] }
 

@@ -125,7 +125,7 @@ fn attach_document_colors(
     let mut color_swatches_padding = Vec::with_capacity(doc_colors.len());
     let mut colors = Vec::with_capacity(doc_colors.len());
 
-    let icons = ICONS.load();
+    let icons = ICONS.load_full();
 
     for (pos, color) in doc_colors {
         color_swatches_padding.push(InlineAnnotation::new(pos, " "));

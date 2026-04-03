@@ -284,7 +284,7 @@ impl<'a> TextRenderer<'a> {
 
         let tab_width = doc.tab_width();
 
-        let icons = ICONS.load();
+        let icons = ICONS.load_full();
 
         let whitespace = icons.ui().r#virtual();
 

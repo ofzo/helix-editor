@@ -2481,7 +2481,7 @@ impl Document {
         let wrap_indicator = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.wrap_indicator.clone())
             .unwrap_or_else(|| {
-                let icons: arc_swap::access::DynGuard<Icons> = ICONS.load();
+                let icons = ICONS.load_full();
                 icons.ui().r#virtual().wrap().to_string()
             });
         let tab_width = self.tab_width() as u16;

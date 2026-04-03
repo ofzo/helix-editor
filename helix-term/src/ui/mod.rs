@@ -266,7 +266,7 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
             let path = item.strip_prefix(&data.root).unwrap_or(item);
             let mut spans = Vec::with_capacity(4);
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             if let Some(icon) = icons.fs().from_path(path) {
                 spans.push(icon.to_span_with(|icon| format!("{icon} ")));
@@ -333,7 +333,7 @@ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std
         |(path, is_dir): &(PathBuf, bool), (root, directory_style): &(PathBuf, Style)| {
             let name = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
 
-            let icons = ICONS.load();
+            let icons = ICONS.load_full();
 
             if *is_dir {
                 if let Some(icon) = icons.fs().directory(false) {
