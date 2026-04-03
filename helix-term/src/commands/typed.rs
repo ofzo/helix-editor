@@ -1835,6 +1835,63 @@ fn lsp_stop(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> any
     Ok(())
 }
 
+fn lsp_info(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let doc = doc!(cx.editor);
+    let lang_config = doc.language_config();
+
+    let configured: Vec<&str> = lang_config
+        .into_iter()
+        .flat_map(|config| config.language_servers.iter().map(|ls| ls.name.as_str()))
+        .collect();
+
+    if configured.is_empty() {
+        cx.editor
+            .set_status("No language servers configured for current document");
+        return Ok(());
+    }
+
+    let active_servers: Vec<_> = doc.language_servers().collect();
+
+    let mut lines = Vec::new();
+    for server_name in &configured {
+        let active_client = active_servers.iter().find(|ls| ls.name() == *server_name);
+        let (icon, status) = match active_client {
+            Some(ls) if ls.is_disconnected() => ("󰌸", "disconnected"),
+            Some(ls) if ls.is_initialized() => ("✓", "active"),
+            Some(_) => ("●", "initializing"),
+            None => ("✗", "inactive"),
+        };
+        let error_msg = active_client
+            .and_then(|ls| ls.last_error())
+            .map(|e| format!("  {e}"))
+            .unwrap_or_default();
+        lines.push(format!("{icon} {server_name} [{status}]{error_msg}"));
+    }
+
+    let contents = format!("```\n{}\n```", lines.join("\n"));
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let contents = ui::Markdown::new(contents, editor.syn_loader.clone());
+                let popup = Popup::new("lsp-info", contents)
+                    .position(Some(helix_core::Position::new(editor.tree.area().height as usize, 0)))
+                    .position_bias(Open::Above);
+                compositor.replace_or_push("lsp-info", popup);
+            },
+        ));
+        Ok(call)
+    };
+
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
 fn tree_sitter_scopes(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3843,6 +3900,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::all(completers::active_language_servers),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "lsp-info",
+        aliases: &[],
+        doc: "Display information about active language servers for the current document",
+        fun: lsp_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

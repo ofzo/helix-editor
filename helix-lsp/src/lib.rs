@@ -950,7 +950,9 @@ fn start_client(
             .await;
 
         if let Err(e) = value {
+            let err_msg = format!("failed to initialize: {}", e);
             log::error!("failed to initialize language server: {}", e);
+            _client.set_error(err_msg);
             return;
         }
 

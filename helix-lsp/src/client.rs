@@ -67,6 +67,7 @@ pub struct Client {
     initialize_notify: Arc<Notify>,
     /// workspace folders added while the server is still initializing
     req_timeout: u64,
+    last_error: Mutex<Option<String>>,
 }
 
 impl Client {
@@ -264,6 +265,7 @@ impl Client {
             root_uri,
             workspace_folders: Mutex::new(workspace_folders),
             initialize_notify: initialize_notify.clone(),
+            last_error: Mutex::new(None),
         };
 
         Ok((client, server_rx, initialize_notify))
@@ -295,6 +297,18 @@ impl Client {
 
     pub fn is_initialized(&self) -> bool {
         self.capabilities.get().is_some()
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.server_tx.is_closed()
+    }
+
+    pub fn set_error(&self, error: String) {
+        *self.last_error.lock() = Some(error);
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().clone()
     }
 
     pub fn capabilities(&self) -> &lsp::ServerCapabilities {
