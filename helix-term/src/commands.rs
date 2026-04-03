@@ -1863,15 +1863,71 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
     let doc_text = doc.text().slice(..);
     let viewport = view.inner_area(doc);
     let text_fmt = doc.text_format(viewport.width, None);
-    (view_offset.anchor, view_offset.vertical_offset) = char_idx_at_visual_offset(
-        doc_text,
-        view_offset.anchor,
-        view_offset.vertical_offset as isize + offset,
-        0,
-        &text_fmt,
-        // &annotations,
-        &view.text_annotations(&*doc, None),
-    );
+
+    // When scrolling with folds, skip over the visual rows consumed by
+    // folded regions, since the formatter doesn't know about folds.
+    let effective_offset = if !doc.folded_lines.is_empty() {
+        let target_visual = view_offset.vertical_offset as isize + offset;
+        if target_visual >= 0 {
+            let anchor_line = doc_text.char_to_line(
+                view_offset.anchor.min(doc_text.len_chars()),
+            );
+            let total_lines = doc_text.len_lines();
+            let target_rows = target_visual as usize;
+            let mut visible = 0usize;
+            let mut line = anchor_line;
+            while visible < target_rows && line + 1 < total_lines {
+                line += 1;
+                if doc.is_line_visible(line) {
+                    visible += 1;
+                }
+            }
+            let folded = doc.count_folded_lines_in_range(anchor_line, line);
+            target_visual + folded as isize
+        } else {
+            let anchor_line = doc_text.char_to_line(
+                view_offset.anchor.min(doc_text.len_chars()),
+            );
+            let target_rows = (-target_visual) as usize;
+            let mut visible = 0usize;
+            let mut line = anchor_line;
+            while visible < target_rows && line > 0 {
+                line -= 1;
+                if doc.is_line_visible(line) {
+                    visible += 1;
+                }
+            }
+            let folded = doc.count_folded_lines_in_range(line, anchor_line);
+            target_visual - folded as isize
+        }
+    } else {
+        view_offset.vertical_offset as isize + offset
+    };
+
+    {
+        let annotations = view.text_annotations(&*doc, None);
+        (view_offset.anchor, view_offset.vertical_offset) = char_idx_at_visual_offset(
+            doc_text,
+            view_offset.anchor,
+            effective_offset,
+            0,
+            &text_fmt,
+            &annotations,
+        );
+    }
+
+    // Ensure anchor doesn't land inside a folded region
+    if !doc.folded_lines.is_empty() {
+        let anchor_line = doc_text.char_to_line(
+            view_offset.anchor.min(doc_text.len_chars()),
+        );
+        if !doc.is_line_visible(anchor_line) {
+            let visible_line = doc.next_visible_line(anchor_line);
+            view_offset.anchor = doc_text.line_to_char(visible_line);
+            view_offset.vertical_offset = 0;
+        }
+    }
+
     doc.set_view_offset(view.id, view_offset);
 
     let doc_text = doc.text().slice(..);

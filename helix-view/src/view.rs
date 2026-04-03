@@ -268,10 +268,42 @@ impl View {
         // Account for folded lines: the visual offset from the formatter doesn't
         // know about folds, so we need to extend the viewport end to ensure the
         // cursor position can be computed, and then adjust the result.
+        // Compute actual visual rows consumed by folds (not just document lines)
+        // to handle soft-wrapped folded lines correctly.
         let anchor_line = doc_text.char_to_line(offset.anchor.min(doc_text.len_chars()));
         let cursor_line = doc_text.char_to_line(cursor.min(doc_text.len_chars()));
-        let folded_lines_before_cursor =
-            doc.count_folded_lines_in_range(anchor_line, cursor_line);
+        let total_lines = doc_text.len_lines();
+        let folded_visual_rows_before_cursor = {
+            let mut total = 0usize;
+            for &(hidden_start, hidden_end) in &doc.folded_line_ranges() {
+                if hidden_start > cursor_line {
+                    break;
+                }
+                if hidden_end < anchor_line {
+                    continue;
+                }
+                let clamped_start = hidden_start.max(anchor_line);
+                let clamped_end = hidden_end.min(cursor_line);
+                if clamped_start > clamped_end {
+                    continue;
+                }
+                let fold_start_char = doc_text.line_to_char(clamped_start);
+                let fold_after_char = if clamped_end + 1 < total_lines {
+                    doc_text.line_to_char(clamped_end + 1)
+                } else {
+                    doc_text.len_chars()
+                };
+                let (vpos, _) = visual_offset_from_block(
+                    doc_text,
+                    fold_start_char,
+                    fold_after_char,
+                    &text_fmt,
+                    &annotations,
+                );
+                total += vpos.row;
+            }
+            total
+        };
 
         let off = visual_offset_from_anchor(
             doc_text,
@@ -279,12 +311,12 @@ impl View {
             cursor,
             &text_fmt,
             &annotations,
-            vertical_viewport_end + folded_lines_before_cursor,
+            vertical_viewport_end + folded_visual_rows_before_cursor,
         );
 
-        // Adjust the visual position by subtracting folded lines
+        // Adjust the visual position by subtracting folded visual rows
         let off_adjusted = off.map(|(mut pos, anchor)| {
-            pos.row = pos.row.saturating_sub(folded_lines_before_cursor);
+            pos.row = pos.row.saturating_sub(folded_visual_rows_before_cursor);
             (pos, anchor)
         });
 
@@ -449,10 +481,43 @@ impl View {
         let text_fmt = doc.text_format(viewport.width, None);
         let annotations = self.text_annotations(doc, None);
 
-        // Account for folded lines between anchor and pos
+        // Account for folded lines between anchor and pos.
+        // Compute actual visual rows consumed by each fold range,
+        // not just document line counts (soft-wrap can differ).
         let anchor_line = text.char_to_line(view_offset.anchor.min(text.len_chars()));
         let pos_line = text.char_to_line(pos.min(text.len_chars()));
-        let folded_lines = doc.count_folded_lines_in_range(anchor_line, pos_line);
+        let total_lines = text.len_lines();
+        let folded_visual_rows = {
+            let mut total = 0usize;
+            for &(hidden_start, hidden_end) in &doc.folded_line_ranges() {
+                if hidden_start > pos_line {
+                    break;
+                }
+                if hidden_end < anchor_line {
+                    continue;
+                }
+                let clamped_start = hidden_start.max(anchor_line);
+                let clamped_end = hidden_end.min(pos_line);
+                if clamped_start > clamped_end {
+                    continue;
+                }
+                let fold_start_char = text.line_to_char(clamped_start);
+                let fold_after_char = if clamped_end + 1 < total_lines {
+                    text.line_to_char(clamped_end + 1)
+                } else {
+                    text.len_chars()
+                };
+                let (vpos, _) = visual_offset_from_block(
+                    text,
+                    fold_start_char,
+                    fold_after_char,
+                    &text_fmt,
+                    &annotations,
+                );
+                total += vpos.row;
+            }
+            total
+        };
 
         let mut pos = visual_offset_from_anchor(
             text,
@@ -460,11 +525,11 @@ impl View {
             pos,
             &text_fmt,
             &annotations,
-            viewport.height as usize + folded_lines,
+            viewport.height as usize + folded_visual_rows,
         )
         .ok()?
         .0;
-        pos.row = pos.row.saturating_sub(folded_lines);
+        pos.row = pos.row.saturating_sub(folded_visual_rows);
         if pos.row < view_offset.vertical_offset {
             return None;
         }
@@ -598,10 +663,58 @@ impl View {
         let text_row = row as usize + view_offset.vertical_offset;
         let text_col = column as usize + view_offset.horizontal_offset;
 
+        // Account for folded lines: char_idx_at_visual_offset doesn't know
+        // about folds, so we need to add the visual rows consumed by hidden
+        // fold regions. We can't just count document lines because soft-wrap
+        // may cause folded lines to span multiple visual rows.
+        let folded_visual_rows = if !doc.folded_lines.is_empty() && text_row > 0 {
+            let anchor_line = text.char_to_line(view_offset.anchor.min(text.len_chars()));
+            let total_lines = text.len_lines();
+
+            // First, find the document line at the target visible row
+            let mut visible_rows = 0usize;
+            let mut doc_line = anchor_line;
+            while visible_rows < text_row && doc_line + 1 < total_lines {
+                doc_line += 1;
+                if doc.is_line_visible(doc_line) {
+                    visible_rows += 1;
+                }
+            }
+
+            // Compute actual visual rows consumed by each fold range
+            // Only count folds between anchor and target
+            let mut total_fold_visual_rows = 0usize;
+            for &(hidden_start, hidden_end) in &doc.folded_line_ranges() {
+                if hidden_start > doc_line {
+                    break;
+                }
+                if hidden_end < anchor_line {
+                    continue;
+                }
+                let fold_start_char = text.line_to_char(hidden_start.max(anchor_line));
+                let fold_after_char = if hidden_end + 1 < total_lines {
+                    text.line_to_char(hidden_end + 1)
+                } else {
+                    text.len_chars()
+                };
+                let (pos, _) = visual_offset_from_block(
+                    text,
+                    fold_start_char,
+                    fold_after_char,
+                    &text_fmt,
+                    annotations,
+                );
+                total_fold_visual_rows += pos.row;
+            }
+            total_fold_visual_rows
+        } else {
+            0
+        };
+
         let (char_idx, virt_lines) = char_idx_at_visual_offset(
             text,
             view_offset.anchor,
-            text_row as isize,
+            (text_row + folded_visual_rows) as isize,
             text_col,
             &text_fmt,
             annotations,
