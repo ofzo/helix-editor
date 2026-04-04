@@ -4415,8 +4415,23 @@ fn execute_command_line(
 
     match typed::TYPABLE_COMMAND_MAP.get(command) {
         Some(cmd) => execute_command(cx, cmd, rest, event),
-        None if event == PromptEvent::Validate => Err(anyhow!("no such command: '{command}'")),
-        None => Ok(()),
+        None => {
+            // Check user-configured command aliases
+            let resolved = cx
+                .editor
+                .config()
+                .command
+                .alias
+                .get(command)
+                .and_then(|target| typed::TYPABLE_COMMAND_MAP.get(target.as_str()));
+            match resolved {
+                Some(cmd) => execute_command(cx, cmd, rest, event),
+                None if event == PromptEvent::Validate => {
+                    Err(anyhow!("no such command: '{command}'"))
+                }
+                None => Ok(()),
+            }
+        }
     }
 }
 
@@ -4534,21 +4549,39 @@ fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Comple
     let (command, rest, complete_command) = command_line::split(input);
 
     if complete_command {
-        fuzzy_match(
+        let alias_names: Vec<String> = editor
+            .config()
+            .command
+            .alias
+            .keys()
+            .cloned()
+            .collect();
+        let mut completions: Vec<_> = fuzzy_match(
             input,
-            TYPABLE_COMMAND_LIST.iter().map(|command| command.name),
+            TYPABLE_COMMAND_LIST
+                .iter()
+                .map(|command| command.name.to_string())
+                .chain(alias_names.into_iter()),
             false,
         )
         .into_iter()
         .map(|(name, _)| (0.., name.into()))
-        .collect()
+        .collect();
+        completions.dedup_by(|a, b| a.1 == b.1);
+        completions
     } else {
-        TYPABLE_COMMAND_MAP
-            .get(command)
-            .map_or_else(Vec::new, |cmd| {
-                let args_offset = command.len() + 1;
-                complete_command_args(editor, cmd.signature, &cmd.completer, rest, args_offset)
-            })
+        let resolved = TYPABLE_COMMAND_MAP.get(command).copied().or_else(|| {
+            editor
+                .config()
+                .command
+                .alias
+                .get(command)
+                .and_then(|target| TYPABLE_COMMAND_MAP.get(target.as_str()).copied())
+        });
+        resolved.map_or_else(Vec::new, |cmd| {
+            let args_offset = command.len() + 1;
+            complete_command_args(editor, cmd.signature, &cmd.completer, rest, args_offset)
+        })
     }
 }
 
