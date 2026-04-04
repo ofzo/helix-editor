@@ -885,7 +885,12 @@ impl Display for ApplyEditErrorKind {
 }
 
 /// Precondition: `locations` should be non-empty.
-fn goto_impl(editor: &mut Editor, compositor: &mut Compositor, locations: Vec<Location>) {
+fn goto_impl(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    locations: Vec<Location>,
+    title: &str,
+) {
     let cwdir = helix_stdx::env::current_working_dir();
 
     match locations.as_slice() {
@@ -893,25 +898,14 @@ fn goto_impl(editor: &mut Editor, compositor: &mut Compositor, locations: Vec<Lo
             jump_to_location(editor, location, Action::Replace);
         }
         [] => unreachable!("`locations` should be non-empty for `goto_impl`"),
-        _locations => {
-            let columns = [ui::PickerColumn::new(
-                "location",
-                |item: &Location, cwdir: &std::path::PathBuf| {
-                    let path = if let Some(path) = item.uri.as_path() {
-                        path.strip_prefix(cwdir).unwrap_or(path).to_string_lossy()
-                    } else {
-                        item.uri.to_string().into()
-                    };
-
-                    format!("{path}:{}", item.range.start.line + 1).into()
-                },
-            )];
-
-            let picker = Picker::new(columns, 0, locations, cwdir, |cx, location, action| {
-                jump_to_location(cx.editor, location, action)
-            })
-            .with_preview(|_editor, location| location_to_file_location(location));
-            compositor.push(Box::new(overlaid(picker)));
+        _ => {
+            let lsp_locations: Vec<_> = locations
+                .into_iter()
+                .map(|loc| (loc.uri, loc.range, loc.offset_encoding))
+                .collect();
+            let finder =
+                ReferenceFinder::new(lsp_locations, cwdir, editor).with_title(title);
+            compositor.push(Box::new(finder));
         }
     }
 }
@@ -931,6 +925,9 @@ where
             async move { anyhow::Ok((future.await?, offset_encoding)) }
         })
         .collect();
+
+    let loading = ReferenceLoading::new(cx.editor);
+    cx.push_layer(Box::new(loading));
 
     cx.jobs.callback(async move {
         let mut locations = Vec::new();
@@ -966,16 +963,22 @@ where
             }
         }
         let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+            compositor.remove(ui::reference_finder::LOADING_ID);
+            let (error_msg, title) = match feature {
+                LanguageServerFeature::GotoDeclaration => ("No declaration found.", "Declarations"),
+                LanguageServerFeature::GotoDefinition => ("No definition found.", "Definitions"),
+                LanguageServerFeature::GotoTypeDefinition => {
+                    ("No type definition found.", "Type Definitions")
+                }
+                LanguageServerFeature::GotoImplementation => {
+                    ("No implementation found.", "Implementations")
+                }
+                _ => ("No location found.", "Locations"),
+            };
             if locations.is_empty() {
-                editor.set_error(match feature {
-                    LanguageServerFeature::GotoDeclaration => "No declaration found.",
-                    LanguageServerFeature::GotoDefinition => "No definition found.",
-                    LanguageServerFeature::GotoTypeDefinition => "No type definition found.",
-                    LanguageServerFeature::GotoImplementation => "No implementation found.",
-                    _ => "No location found.",
-                });
+                editor.set_error(error_msg);
             } else {
-                goto_impl(editor, compositor, locations);
+                goto_impl(editor, compositor, locations, title);
             }
         };
         Ok(Callback::EditorCompositor(Box::new(call)))
@@ -1066,22 +1069,7 @@ pub fn goto_reference(cx: &mut Context) {
 }
 
 fn goto_reference_impl(editor: &mut Editor, compositor: &mut Compositor, locations: Vec<Location>) {
-    let cwdir = helix_stdx::env::current_working_dir();
-
-    match locations.as_slice() {
-        [location] => {
-            jump_to_location(editor, location, Action::Replace);
-        }
-        [] => unreachable!("`locations` should be non-empty for `goto_reference_impl`"),
-        _locations => {
-            let lsp_locations: Vec<_> = locations
-                .into_iter()
-                .map(|loc| (loc.uri, loc.range, loc.offset_encoding))
-                .collect();
-            let finder = ReferenceFinder::new(lsp_locations, cwdir, editor);
-            compositor.push(Box::new(finder));
-        }
-    }
+    goto_impl(editor, compositor, locations, "References");
 }
 
 pub fn incoming_calls(cx: &mut Context) {
@@ -1219,22 +1207,7 @@ fn call_hierarchy_show(
     locations: Vec<Location>,
     title: &str,
 ) {
-    let cwdir = helix_stdx::env::current_working_dir();
-    match locations.as_slice() {
-        [location] => {
-            jump_to_location(editor, location, Action::Replace);
-        }
-        [] => unreachable!(),
-        _ => {
-            let lsp_locations: Vec<_> = locations
-                .into_iter()
-                .map(|loc| (loc.uri, loc.range, loc.offset_encoding))
-                .collect();
-            let finder =
-                ReferenceFinder::new(lsp_locations, cwdir, editor).with_title(title);
-            compositor.push(Box::new(finder));
-        }
-    }
+    goto_impl(editor, compositor, locations, title);
 }
 
 pub fn signature_help(cx: &mut Context) {
