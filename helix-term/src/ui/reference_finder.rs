@@ -865,10 +865,15 @@ pub const LOADING_ID: &str = "reference_loading";
 
 pub struct ReferenceLoading {
     symbol_col_offset: usize,
-    spinner: crate::ui::Spinner,
+    start: std::time::Instant,
 }
 
 impl ReferenceLoading {
+    const DOT_COUNT: usize = 5;
+    const INTERVAL_MS: u128 = 150;
+    const FILLED: &'static str = "●";
+    const HOLLOW: &'static str = "○";
+
     pub fn new(editor: &Editor) -> Self {
         let symbol_col_offset = {
             let (view, doc) = helix_view::current_ref!(editor);
@@ -888,13 +893,26 @@ impl ReferenceLoading {
             cursor_col - word_start
         };
 
-        let mut spinner = crate::ui::Spinner::default();
-        spinner.start();
-
         ReferenceLoading {
             symbol_col_offset,
-            spinner,
+            start: std::time::Instant::now(),
         }
+    }
+
+    fn dots_label(&self) -> String {
+        let elapsed = std::time::Instant::now().duration_since(self.start).as_millis();
+        let active = (elapsed / Self::INTERVAL_MS) as usize % Self::DOT_COUNT;
+        let mut s = String::with_capacity(Self::DOT_COUNT * 4 + 4);
+        s.push(' ');
+        for i in 0..Self::DOT_COUNT {
+            if i == active {
+                s.push_str(Self::FILLED);
+            } else {
+                s.push_str(Self::HOLLOW);
+            }
+        }
+        s.push(' ');
+        s
     }
 }
 
@@ -926,9 +944,8 @@ impl Component for ReferenceLoading {
             cursor_row.saturating_sub(2)
         };
 
-        let frame = self.spinner.frame().unwrap_or("󰪞");
-        let label = format!(" {} Loading... ", frame);
-        let width = label.len() as u16 + 2;
+        let label = self.dots_label();
+        let width = label.chars().count() as u16 + 2;
 
         let x = symbol_col.min(viewport.width.saturating_sub(width));
         let area = Rect::new(x, y, width, 1);
