@@ -49,6 +49,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "y" => goto_type_definition,
             "r" => goto_reference,
             "i" => goto_implementation,
+            "I" => incoming_calls,
+            "O" => outgoing_calls,
             "t" => goto_window_top,
             "c" => goto_window_center,
             "b" => goto_window_bottom,

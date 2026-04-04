@@ -33,7 +33,7 @@ use helix_view::{
 use crate::{
     compositor::{self, Compositor},
     job::Callback,
-    ui::{self, overlay::overlaid, FileLocation, Picker, Popup, PromptEvent},
+    ui::{self, overlay::overlaid, FileLocation, Picker, Popup, PromptEvent, ReferenceFinder, ReferenceLoading},
 };
 
 use std::{cmp::Ordering, collections::HashSet, fmt::Display, future::Future, path::Path};
@@ -1035,6 +1035,10 @@ pub fn goto_reference(cx: &mut Context) {
         })
         .collect();
 
+    // Show loading indicator immediately
+    let loading = ReferenceLoading::new(cx.editor);
+    cx.push_layer(Box::new(loading));
+
     cx.jobs.callback(async move {
         let mut locations = Vec::new();
         while let Some(response) = futures.next().await {
@@ -1049,14 +1053,188 @@ pub fn goto_reference(cx: &mut Context) {
             }
         }
         let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+            // Remove loading indicator
+            compositor.remove(ui::reference_finder::LOADING_ID);
             if locations.is_empty() {
                 editor.set_error("No references found.");
             } else {
-                goto_impl(editor, compositor, locations);
+                goto_reference_impl(editor, compositor, locations);
             }
         };
         Ok(Callback::EditorCompositor(Box::new(call)))
     });
+}
+
+fn goto_reference_impl(editor: &mut Editor, compositor: &mut Compositor, locations: Vec<Location>) {
+    let cwdir = helix_stdx::env::current_working_dir();
+
+    match locations.as_slice() {
+        [location] => {
+            jump_to_location(editor, location, Action::Replace);
+        }
+        [] => unreachable!("`locations` should be non-empty for `goto_reference_impl`"),
+        _locations => {
+            let lsp_locations: Vec<_> = locations
+                .into_iter()
+                .map(|loc| (loc.uri, loc.range, loc.offset_encoding))
+                .collect();
+            let finder = ReferenceFinder::new(lsp_locations, cwdir, editor);
+            compositor.push(Box::new(finder));
+        }
+    }
+}
+
+pub fn incoming_calls(cx: &mut Context) {
+    call_hierarchy(cx, true);
+}
+
+pub fn outgoing_calls(cx: &mut Context) {
+    call_hierarchy(cx, false);
+}
+
+fn call_hierarchy(cx: &mut Context, is_incoming: bool) {
+    let (view, doc) = current_ref!(cx.editor);
+
+    let language_server = doc
+        .language_servers_with_feature(LanguageServerFeature::CallHierarchy)
+        .next();
+
+    let Some(language_server) = language_server else {
+        cx.editor
+            .set_error("No configured language server supports call hierarchy");
+        return;
+    };
+
+    let offset_encoding = language_server.offset_encoding();
+    let pos = doc.position(view.id, offset_encoding);
+
+    let Some(prepare_future) =
+        language_server.prepare_call_hierarchy(doc.identifier(), pos)
+    else {
+        cx.editor
+            .set_error("Language server does not support call hierarchy");
+        return;
+    };
+
+    // block_on for prepare (fast, returns item at cursor), then create the
+    // incoming/outgoing future which runs asynchronously.
+    let prepare_result = match block_on(prepare_future) {
+        Ok(result) => result.unwrap_or_default(),
+        Err(err) => {
+            cx.editor
+                .set_error(format!("Failed to prepare call hierarchy: {err}"));
+            return;
+        }
+    };
+
+    if prepare_result.is_empty() {
+        cx.editor
+            .set_error("No call hierarchy items found at cursor.");
+        return;
+    }
+
+    let item = prepare_result.into_iter().next().unwrap();
+
+    // Create the hierarchy future while we still hold the language_server borrow
+    let hierarchy_future: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<Vec<Location>>> + Send>> =
+        if is_incoming {
+            let Some(future) = language_server.call_hierarchy_incoming(item) else {
+                cx.editor
+                    .set_error("Language server does not support incoming calls");
+                return;
+            };
+            Box::pin(async move {
+                let result = future.await?;
+                let mut locations = Vec::new();
+                for incoming in result.unwrap_or_default() {
+                    let Ok(uri) = Uri::try_from(&incoming.from.uri) else {
+                        continue;
+                    };
+                    for range in &incoming.from_ranges {
+                        locations.push(Location {
+                            uri: uri.clone(),
+                            range: *range,
+                            offset_encoding,
+                        });
+                    }
+                }
+                Ok(locations)
+            })
+        } else {
+            let Some(future) = language_server.call_hierarchy_outgoing(item) else {
+                cx.editor
+                    .set_error("Language server does not support outgoing calls");
+                return;
+            };
+            Box::pin(async move {
+                let result = future.await?;
+                let mut locations = Vec::new();
+                for outgoing in result.unwrap_or_default() {
+                    let Ok(uri) = Uri::try_from(&outgoing.to.uri) else {
+                        continue;
+                    };
+                    locations.push(Location {
+                        uri,
+                        range: outgoing.to.selection_range,
+                        offset_encoding,
+                    });
+                }
+                Ok(locations)
+            })
+        };
+
+    // Now we can drop the language_server borrow and push the loading layer
+    let loading = ReferenceLoading::new(cx.editor);
+    cx.push_layer(Box::new(loading));
+
+    let title = if is_incoming {
+        "Incoming Calls"
+    } else {
+        "Outgoing Calls"
+    }
+    .to_string();
+
+    cx.jobs.callback(async move {
+        let locations = hierarchy_future.await?;
+        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+            compositor.remove(ui::reference_finder::LOADING_ID);
+            if locations.is_empty() {
+                let msg = if is_incoming {
+                    "No incoming calls found."
+                } else {
+                    "No outgoing calls found."
+                };
+                editor.set_error(msg);
+            } else {
+                call_hierarchy_show(editor, compositor, locations, &title);
+            }
+        };
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    });
+}
+
+fn call_hierarchy_show(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    locations: Vec<Location>,
+    title: &str,
+) {
+    let cwdir = helix_stdx::env::current_working_dir();
+    match locations.as_slice() {
+        [location] => {
+            jump_to_location(editor, location, Action::Replace);
+        }
+        [] => unreachable!(),
+        _ => {
+            let lsp_locations: Vec<_> = locations
+                .into_iter()
+                .map(|loc| (loc.uri, loc.range, loc.offset_encoding))
+                .collect();
+            let finder =
+                ReferenceFinder::new(lsp_locations, cwdir, editor).with_title(title);
+            compositor.push(Box::new(finder));
+        }
+    }
 }
 
 pub fn signature_help(cx: &mut Context) {
