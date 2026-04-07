@@ -29,7 +29,6 @@ pub struct Icons {
     kind: Kind,
     diagnostic: Diagnostic,
     vcs: Vcs,
-    dap: Dap,
     ui: Ui,
 }
 
@@ -95,20 +94,6 @@ impl Icons {
 
     /// Returns a handle to all debug related icons.
     ///
-    /// ```
-    /// use helix_view::icons::ICONS;
-    ///
-    /// let icons = ICONS.load();
-    ///
-    /// assert_eq!("●", icons.dap().verified());
-    /// assert_eq!("◯", icons.dap().unverified());
-    /// assert_eq!("▶", icons.dap().play());
-    /// ```
-    #[inline]
-    pub fn dap(&self) -> &Dap {
-        &self.dap
-    }
-
     /// Returns a handle to all UI related icons.
     ///
     /// These icons relate to things like virtual text and statusline elements, visual elements, rather than some other
@@ -995,30 +980,6 @@ impl Fs {
         // If icons are enabled but there is no matching found, default to the `text` icon.
         // Check user configured first, then built-in.
         self.mime.get("text").or_else(|| MIMES.get("text"))
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Default)]
-pub struct Dap {
-    verified: Option<String>,
-    unverified: Option<String>,
-    play: Option<String>,
-}
-
-impl Dap {
-    #[inline]
-    pub fn verified(&self) -> &str {
-        self.verified.as_deref().unwrap_or("●")
-    }
-
-    #[inline]
-    pub fn unverified(&self) -> &str {
-        self.unverified.as_deref().unwrap_or("◯")
-    }
-
-    #[inline]
-    pub fn play(&self) -> &str {
-        self.play.as_deref().unwrap_or("▶")
     }
 }
 

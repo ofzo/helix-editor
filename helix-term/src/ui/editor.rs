@@ -112,20 +112,6 @@ impl EditorView {
             Self::highlight_cursorcolumn(doc, view, surface, theme, inner, &text_annotations);
         }
 
-        // Set DAP highlights, if needed.
-        if let Some(frame) = editor.current_stack_frame() {
-            let dap_line = frame.line.saturating_sub(1);
-            let style = theme.get("ui.highlight.frameline");
-            let line_decoration = move |renderer: &mut TextRenderer, pos: LinePos| {
-                if pos.doc_line != dap_line {
-                    return;
-                }
-                renderer.set_style(Rect::new(inner.x, pos.visual_line, inner.width, 1), style);
-            };
-
-            decorations.add_decoration(line_decoration);
-        }
-
         let folded_ranges = doc.folded_line_ranges();
         // Extend viewport height to account for folded lines so the highlighter
         // covers all content that will actually render on screen.
@@ -1379,13 +1365,6 @@ impl EditorView {
             })
         };
 
-        let gutter_coords_and_view = |editor: &Editor, row, column| {
-            editor.tree.views().find_map(|(view, _focus)| {
-                view.gutter_coords_at_screen_coords(row, column)
-                    .map(|coords| (coords, view.id))
-            })
-        };
-
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
@@ -1419,25 +1398,6 @@ impl EditorView {
                     editor.ensure_cursor_in_view(view_id);
 
                     return EventResult::Consumed(None);
-                }
-
-                if let Some((coords, view_id)) = gutter_coords_and_view(editor, row, column) {
-                    editor.focus(view_id);
-
-                    let (view, doc) = current!(cxt.editor);
-
-                    let path = match doc.path() {
-                        Some(path) => path.clone(),
-                        None => return EventResult::Ignored(None),
-                    };
-
-                    if let Some(char_idx) =
-                        view.pos_at_visual_coords(doc, coords.row as u16, coords.col as u16, true)
-                    {
-                        let line = doc.text().char_to_line(char_idx);
-                        commands::dap_toggle_breakpoint_impl(cxt, path, line);
-                        return EventResult::Consumed(None);
-                    }
                 }
 
                 EventResult::Ignored(None)
@@ -1515,28 +1475,6 @@ impl EditorView {
             }
 
             MouseEventKind::Up(MouseButton::Right) => {
-                if let Some((pos, view_id)) = gutter_coords_and_view(cxt.editor, row, column) {
-                    cxt.editor.focus(view_id);
-
-                    if let Some((pos, _)) = pos_and_view(cxt.editor, row, column, true) {
-                        doc_mut!(cxt.editor).set_selection(view_id, Selection::point(pos));
-                    } else {
-                        let (view, doc) = current!(cxt.editor);
-
-                        if let Some(pos) = view.pos_at_visual_coords(doc, pos.row as u16, 0, true) {
-                            doc.set_selection(view_id, Selection::point(pos));
-                            match modifiers {
-                                KeyModifiers::ALT => {
-                                    commands::MappableCommand::dap_edit_log.execute(cxt)
-                                }
-                                _ => commands::MappableCommand::dap_edit_condition.execute(cxt),
-                            };
-                        }
-                    }
-
-                    cxt.editor.ensure_cursor_in_view(view_id);
-                    return EventResult::Consumed(None);
-                }
                 EventResult::Ignored(None)
             }
 

@@ -8,8 +8,6 @@ members = [
   "helix-lsp-types",
   "helix-lsp",
   "helix-event",
-  "helix-dap-types",
-  "helix-dap",
   "helix-loader",
   "helix-vcs",
   "helix-parsec",

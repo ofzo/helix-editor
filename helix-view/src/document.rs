@@ -43,7 +43,7 @@ use helix_core::{
     ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
 };
 
-use crate::icons::{Icons, ICONS};
+use crate::icons::ICONS;
 use crate::{
     editor::Config,
     events::{DocumentDidChange, SelectionDidChange},

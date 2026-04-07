@@ -2091,62 +2091,6 @@ fn hsplit_new(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
     Ok(())
 }
 
-fn debug_eval(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-
-    if let Some(debugger) = cx.editor.debug_adapters.get_active_client() {
-        let (frame, thread_id) = match (debugger.active_frame, debugger.thread_id) {
-            (Some(frame), Some(thread_id)) => (frame, thread_id),
-            _ => {
-                bail!("Cannot find current stack frame to access variables")
-            }
-        };
-
-        // TODO: support no frame_id
-
-        let frame_id = debugger.stack_frames[&thread_id][frame].id;
-        let response = helix_lsp::block_on(debugger.eval(args.join(" "), Some(frame_id)))?;
-        cx.editor.set_status(response.result);
-    }
-    Ok(())
-}
-
-fn debug_start(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-
-    let mut args: Vec<_> = args.into_iter().collect();
-    let name = match args.len() {
-        0 => None,
-        _ => Some(args.remove(0)),
-    };
-    dap_start_impl(cx, name.as_deref(), None, Some(args))
-}
-
-fn debug_remote(
-    cx: &mut compositor::Context,
-    args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-
-    let mut args: Vec<_> = args.into_iter().collect();
-    let address = match args.len() {
-        0 => None,
-        _ => Some(args.remove(0).parse()?),
-    };
-    let name = match args.len() {
-        0 => None,
-        _ => Some(args.remove(0)),
-    };
-    dap_start_impl(cx, name.as_deref(), address, Some(args))
-}
-
 fn tutor(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3944,39 +3888,6 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "debug-start",
-        aliases: &["dbg"],
-        doc: "Start a debug session from a given template with given parameters.",
-        fun: debug_start,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, None),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "debug-remote",
-        aliases: &["dbg-tcp"],
-        doc: "Connect to a debug adapter by TCP address and start a debugging session from a given template with given parameters.",
-        fun: debug_remote,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, None),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "debug-eval",
-        aliases: &[],
-        doc: "Evaluate expression in current debug context.",
-        fun: debug_eval,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (1, Some(1)),
             ..Signature::DEFAULT
         },
     },

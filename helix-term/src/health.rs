@@ -247,9 +247,6 @@ fn languages(selection: Option<HashSet<String>>) -> std::io::Result<()> {
         });
         write!(stdout, "{}", check_binary_with_name(cmds.next()))?;
 
-        let dap = lang.debugger.as_ref().map(|dap| dap.command.as_str());
-        write!(stdout, "{}", check_binary(dap))?;
-
         let formatter = lang
             .formatter
             .as_ref()
@@ -340,11 +337,6 @@ pub fn language(lang_str: String) -> std::io::Result<()> {
                 .get(&ls.name)
                 .map(|config| (ls.name.as_str(), config.command.as_str()))
         }),
-    )?;
-
-    probe_protocol(
-        "debug adapter",
-        lang.debugger.as_ref().map(|dap| dap.command.to_string()),
     )?;
 
     probe_protocol(

@@ -1,9 +1,7 @@
-pub(crate) mod dap;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
-pub use dap::*;
 use futures_util::FutureExt;
 use helix_event::status;
 use helix_stdx::{
@@ -586,22 +584,6 @@ impl MappableCommand {
         goto_prev_entry, "Goto previous pairing",
         goto_next_paragraph, "Goto next paragraph",
         goto_prev_paragraph, "Goto previous paragraph",
-        dap_launch, "Launch debug target",
-        dap_restart, "Restart debugging session",
-        dap_toggle_breakpoint, "Toggle breakpoint",
-        dap_continue, "Continue program execution",
-        dap_pause, "Pause program execution",
-        dap_step_in, "Step in",
-        dap_step_out, "Step out",
-        dap_next, "Step to next",
-        dap_variables, "List variables",
-        dap_terminate, "End debug session",
-        dap_edit_condition, "Edit breakpoint condition on current line",
-        dap_edit_log, "Edit breakpoint log message on current line",
-        dap_switch_thread, "Switch current thread",
-        dap_switch_stack_frame, "Switch stack frame",
-        dap_enable_exceptions, "Enable exception breakpoints",
-        dap_disable_exceptions, "Disable exception breakpoints",
         shell_pipe, "Pipe selections through shell command",
         shell_pipe_to, "Pipe selections into shell command ignoring output",
         shell_insert_output, "Insert shell command output before selections",

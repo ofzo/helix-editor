@@ -2,7 +2,6 @@ use crate::{auto_pairs::AutoPairs, diagnostic::Severity, Language};
 
 use helix_stdx::rope;
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize};
-use serde_json::Value;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -83,9 +82,6 @@ pub struct LanguageConfiguration {
     pub language_servers: Vec<LanguageServerFeatures>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<IndentationConfiguration>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub debugger: Option<DebugAdapterConfig>,
 
     /// Automatic insertion of pairs to parentheses, brackets,
     /// etc. Defaults to true. Optionally, this can be a list of 2-tuples
@@ -454,53 +450,6 @@ pub struct FormatterConfiguration {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct AdvancedCompletion {
-    pub name: Option<String>,
-    pub completion: Option<String>,
-    pub default: Option<String>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case", untagged)]
-pub enum DebugConfigCompletion {
-    Named(String),
-    Advanced(AdvancedCompletion),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct DebugTemplate {
-    pub name: String,
-    pub request: String,
-    #[serde(default)]
-    pub completion: Vec<DebugConfigCompletion>,
-    pub args: HashMap<String, Value>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct DebugAdapterConfig {
-    pub name: String,
-    pub transport: String,
-    #[serde(default)]
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    pub port_arg: Option<String>,
-    pub templates: Vec<DebugTemplate>,
-    #[serde(default)]
-    pub quirks: DebuggerQuirks,
-}
-
-// Different workarounds for adapters' differences
-#[derive(Debug, Default, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub struct DebuggerQuirks {
-    #[serde(default)]
-    pub absolute_paths: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
