@@ -1876,167 +1876,174 @@ fn switch_to_lowercase(cx: &mut Context) {
 pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor: bool) {
     use Direction::*;
     let config = cx.editor.config();
-    let (view, doc) = current!(cx.editor);
-    let mut view_offset = doc.view_offset(view.id);
 
-    let range = doc.selection(view.id).primary();
-    let text = doc.text().slice(..);
+    // Compute old/new offsets and row delta, then perform cursor adjustments
+    let (view_id, old_offset, new_offset, row_delta) = {
+        let (view, doc) = current!(cx.editor);
+        let old_offset = doc.view_offset(view.id);
+        let mut view_offset = old_offset;
 
-    let cursor = range.cursor(text);
-    let height = view.inner_height();
+        let range = doc.selection(view.id).primary();
+        let text = doc.text().slice(..);
 
-    let scrolloff = config.scrolloff.min(height.saturating_sub(1) / 2);
-    let offset = match direction {
-        Forward => offset as isize,
-        Backward => -(offset as isize),
-    };
+        let cursor = range.cursor(text);
+        let height = view.inner_height();
 
-    let doc_text = doc.text().slice(..);
-    let viewport = view.inner_area(doc);
-    let text_fmt = doc.text_format(viewport.width, None);
-
-    // When scrolling with folds, skip over the visual rows consumed by
-    // folded regions, since the formatter doesn't know about folds.
-    let effective_offset = if !doc.folded_lines.is_empty() {
-        let target_visual = view_offset.vertical_offset as isize + offset;
-        if target_visual >= 0 {
-            let anchor_line = doc_text.char_to_line(
-                view_offset.anchor.min(doc_text.len_chars()),
-            );
-            let total_lines = doc_text.len_lines();
-            let target_rows = target_visual as usize;
-            let mut visible = 0usize;
-            let mut line = anchor_line;
-            while visible < target_rows && line + 1 < total_lines {
-                line += 1;
-                if doc.is_line_visible(line) {
-                    visible += 1;
-                }
-            }
-            let folded = doc.count_folded_lines_in_range(anchor_line, line);
-            target_visual + folded as isize
-        } else {
-            let anchor_line = doc_text.char_to_line(
-                view_offset.anchor.min(doc_text.len_chars()),
-            );
-            let target_rows = (-target_visual) as usize;
-            let mut visible = 0usize;
-            let mut line = anchor_line;
-            while visible < target_rows && line > 0 {
-                line -= 1;
-                if doc.is_line_visible(line) {
-                    visible += 1;
-                }
-            }
-            let folded = doc.count_folded_lines_in_range(line, anchor_line);
-            target_visual - folded as isize
-        }
-    } else {
-        view_offset.vertical_offset as isize + offset
-    };
-
-    {
-        let annotations = view.text_annotations(&*doc, None);
-        (view_offset.anchor, view_offset.vertical_offset) = char_idx_at_visual_offset(
-            doc_text,
-            view_offset.anchor,
-            effective_offset,
-            0,
-            &text_fmt,
-            &annotations,
-        );
-    }
-
-    // Ensure anchor doesn't land inside a folded region
-    if !doc.folded_lines.is_empty() {
-        let anchor_line = doc_text.char_to_line(
-            view_offset.anchor.min(doc_text.len_chars()),
-        );
-        if !doc.is_line_visible(anchor_line) {
-            let visible_line = doc.next_visible_line(anchor_line);
-            view_offset.anchor = doc_text.line_to_char(visible_line);
-            view_offset.vertical_offset = 0;
-        }
-    }
-
-    doc.set_view_offset(view.id, view_offset);
-
-    let doc_text = doc.text().slice(..);
-    let mut annotations = view.text_annotations(&*doc, None);
-
-    if sync_cursor {
-        let movement = match cx.editor.mode {
-            Mode::Select => Movement::Extend,
-            _ => Movement::Move,
+        let scrolloff = config.scrolloff.min(height.saturating_sub(1) / 2);
+        let offset = match direction {
+            Forward => offset as isize,
+            Backward => -(offset as isize),
         };
-        // TODO: When inline diagnostics gets merged- 1. move_vertically_visual removes
-        // line annotations/diagnostics so the cursor may jump further than the view.
-        // 2. If the cursor lands on a complete line of virtual text, the cursor will
-        // jump a different distance than the view.
-        let selection = doc.selection(view.id).clone().transform(|range| {
-            move_vertically_visual(
-                doc_text,
-                range,
-                direction,
-                offset.unsigned_abs(),
-                movement,
-                &text_fmt,
-                &mut annotations,
-            )
-        });
-        drop(annotations);
-        doc.set_selection(view.id, selection);
-        return;
-    }
 
-    let view_offset = doc.view_offset(view.id);
+        let doc_text = doc.text().slice(..);
+        let viewport = view.inner_area(doc);
+        let text_fmt = doc.text_format(viewport.width, None);
 
-    let mut head;
-    match direction {
-        Forward => {
-            let off;
-            (head, off) = char_idx_at_visual_offset(
+        // When scrolling with folds, skip over the visual rows consumed by
+        // folded regions, since the formatter doesn't know about folds.
+        let effective_offset = if !doc.folded_lines.is_empty() {
+            let target_visual = view_offset.vertical_offset as isize + offset;
+            if target_visual >= 0 {
+                let anchor_line = doc_text.char_to_line(
+                    view_offset.anchor.min(doc_text.len_chars()),
+                );
+                let total_lines = doc_text.len_lines();
+                let target_rows = target_visual as usize;
+                let mut visible = 0usize;
+                let mut line = anchor_line;
+                while visible < target_rows && line + 1 < total_lines {
+                    line += 1;
+                    if doc.is_line_visible(line) {
+                        visible += 1;
+                    }
+                }
+                let folded = doc.count_folded_lines_in_range(anchor_line, line);
+                target_visual + folded as isize
+            } else {
+                let anchor_line = doc_text.char_to_line(
+                    view_offset.anchor.min(doc_text.len_chars()),
+                );
+                let target_rows = (-target_visual) as usize;
+                let mut visible = 0usize;
+                let mut line = anchor_line;
+                while visible < target_rows && line > 0 {
+                    line -= 1;
+                    if doc.is_line_visible(line) {
+                        visible += 1;
+                    }
+                }
+                let folded = doc.count_folded_lines_in_range(line, anchor_line);
+                target_visual - folded as isize
+            }
+        } else {
+            view_offset.vertical_offset as isize + offset
+        };
+
+        {
+            let annotations = view.text_annotations(&*doc, None);
+            (view_offset.anchor, view_offset.vertical_offset) = char_idx_at_visual_offset(
                 doc_text,
                 view_offset.anchor,
-                (view_offset.vertical_offset + scrolloff) as isize,
+                effective_offset,
                 0,
                 &text_fmt,
                 &annotations,
             );
-            head += (off != 0) as usize;
-            if head <= cursor {
-                return;
-            }
         }
-        Backward => {
-            head = char_idx_at_visual_offset(
-                doc_text,
-                view_offset.anchor,
-                (view_offset.vertical_offset + height - scrolloff - 1) as isize,
-                0,
-                &text_fmt,
-                &annotations,
-            )
-            .0;
-            if head >= cursor {
-                return;
-            }
-        }
-    }
 
-    let anchor = if cx.editor.mode == Mode::Select {
-        range.anchor
-    } else {
-        head
+        // Ensure anchor doesn't land inside a folded region
+        if !doc.folded_lines.is_empty() {
+            let anchor_line = doc_text.char_to_line(
+                view_offset.anchor.min(doc_text.len_chars()),
+            );
+            if !doc.is_line_visible(anchor_line) {
+                let visible_line = doc.next_visible_line(anchor_line);
+                view_offset.anchor = doc_text.line_to_char(visible_line);
+                view_offset.vertical_offset = 0;
+            }
+        }
+
+        doc.set_view_offset(view.id, view_offset);
+
+        let doc_text = doc.text().slice(..);
+        let mut annotations = view.text_annotations(&*doc, None);
+
+        if sync_cursor {
+            let movement = match cx.editor.mode {
+                Mode::Select => Movement::Extend,
+                _ => Movement::Move,
+            };
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                move_vertically_visual(
+                    doc_text,
+                    range,
+                    direction,
+                    offset.unsigned_abs(),
+                    movement,
+                    &text_fmt,
+                    &mut annotations,
+                )
+            });
+            drop(annotations);
+            doc.set_selection(view.id, selection);
+            (view.id, old_offset, view_offset, offset)
+        } else {
+            let view_offset = doc.view_offset(view.id);
+
+            let mut head;
+            let mut early_return = false;
+            match direction {
+                Forward => {
+                    let off;
+                    (head, off) = char_idx_at_visual_offset(
+                        doc_text,
+                        view_offset.anchor,
+                        (view_offset.vertical_offset + scrolloff) as isize,
+                        0,
+                        &text_fmt,
+                        &annotations,
+                    );
+                    head += (off != 0) as usize;
+                    if head <= cursor {
+                        early_return = true;
+                    }
+                }
+                Backward => {
+                    head = char_idx_at_visual_offset(
+                        doc_text,
+                        view_offset.anchor,
+                        (view_offset.vertical_offset + height - scrolloff - 1) as isize,
+                        0,
+                        &text_fmt,
+                        &annotations,
+                    )
+                    .0;
+                    if head >= cursor {
+                        early_return = true;
+                    }
+                }
+            }
+
+            if !early_return {
+                let anchor = if cx.editor.mode == Mode::Select {
+                    range.anchor
+                } else {
+                    head
+                };
+
+                let prim_sel = Range::new(anchor, head);
+                let mut sel = doc.selection(view.id).clone();
+                let idx = sel.primary_index();
+                sel = sel.replace(idx, prim_sel);
+                drop(annotations);
+                doc.set_selection(view.id, sel);
+            }
+
+            (view.id, old_offset, view_offset, offset)
+        }
     };
 
-    // replace primary selection with an empty selection at cursor pos
-    let prim_sel = Range::new(anchor, head);
-    let mut sel = doc.selection(view.id).clone();
-    let idx = sel.primary_index();
-    sel = sel.replace(idx, prim_sel);
-    drop(annotations);
-    doc.set_selection(view.id, sel);
+    cx.editor.start_scroll_animation(view_id, old_offset, new_offset, row_delta);
 }
 
 fn page_up(cx: &mut Context) {
@@ -2800,7 +2807,7 @@ fn global_search(cx: &mut Context) {
 
             doc.set_selection(view.id, Selection::single(start, end));
             if action.align_view(view, doc.id()) {
-                align_view(doc, view, Align::Center);
+                cx.editor.align_view_animated(Align::Center);
             }
         },
     )
@@ -7023,18 +7030,15 @@ fn copy_between_registers(cx: &mut Context) {
 }
 
 fn align_view_top(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Top);
+    cx.editor.align_view_animated(Align::Top);
 }
 
 fn align_view_center(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Center);
+    cx.editor.align_view_animated(Align::Center);
 }
 
 fn align_view_bottom(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Bottom);
+    cx.editor.align_view_animated(Align::Bottom);
 }
 
 fn align_view_middle(cx: &mut Context) {

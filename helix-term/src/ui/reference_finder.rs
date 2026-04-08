@@ -994,7 +994,7 @@ fn jump_to(
     if let Some(new_range) = lsp_range_to_range(doc.text(), range, offset_encoding) {
         doc.set_selection(view.id, Selection::single(new_range.head, new_range.anchor));
         if action.align_view(view, doc.id()) {
-            align_view(doc, view, Align::Center);
+            editor.align_view_animated(Align::Center);
         }
     }
 }

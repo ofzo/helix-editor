@@ -127,6 +127,51 @@ pub struct ViewPosition {
     pub vertical_offset: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct ScrollAnimation {
+    /// Viewport position when the animation started
+    pub from: ViewPosition,
+    /// Target viewport position
+    pub to: ViewPosition,
+    /// When the animation started
+    pub started_at: std::time::Instant,
+    /// Animation duration in milliseconds
+    pub duration_ms: u64,
+    /// Signed visual row delta (positive = scroll down, negative = scroll up)
+    pub delta_rows: isize,
+}
+
+impl ScrollAnimation {
+    pub fn new(from: ViewPosition, to: ViewPosition, delta_rows: isize) -> Self {
+        Self {
+            from,
+            to,
+            started_at: std::time::Instant::now(),
+            duration_ms: 300,
+            delta_rows,
+        }
+    }
+
+    /// Returns animation progress 0.0..=1.0 with ease-out cubic easing
+    pub fn progress(&self) -> f64 {
+        let elapsed = self.started_at.elapsed().as_millis() as f64;
+        let t = (elapsed / self.duration_ms as f64).min(1.0);
+        // ease-out cubic: 1 - (1 - t)^3
+        1.0 - (1.0 - t).powi(3)
+    }
+
+    /// Whether the animation has completed
+    pub fn is_done(&self) -> bool {
+        self.started_at.elapsed().as_millis() as u64 >= self.duration_ms
+    }
+
+    /// Current row offset from the start position (rounded to nearest integer)
+    pub fn current_row_offset(&self) -> isize {
+        let progress = self.progress();
+        (self.delta_rows as f64 * progress).round() as isize
+    }
+}
+
 #[derive(Clone)]
 pub struct View {
     pub id: ViewId,

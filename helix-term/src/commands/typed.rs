@@ -156,7 +156,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             let pos =
                 Selection::point(pos_at_coords(doc.text().slice(..), Position::default(), true));
             doc.set_selection(view.id, pos);
-            align_view(doc, view, Align::Center);
+            cx.editor.align_view_animated(Align::Center);
             continue;
         }
         let (path, pos) = crate::args::parse_file(&arg);
@@ -182,7 +182,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             let pos = Selection::point(pos_at_coords(doc.text().slice(..), pos, true));
             doc.set_selection(view.id, pos);
             // does not affect opening a buffer without pos
-            align_view(doc, view, Align::Center);
+            cx.editor.align_view_animated(Align::Center);
         }
     }
     Ok(())

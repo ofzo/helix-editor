@@ -708,6 +708,10 @@ impl Application {
                 self.handle_debugger_event(event).await;
                 helix_event::request_redraw();
             }
+            EditorEvent::AnimationFrame => {
+                self.editor.tick_animations();
+                self.render().await;
+            }
             EditorEvent::Redraw => {
                 self.render().await;
             }

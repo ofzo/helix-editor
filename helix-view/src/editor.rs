@@ -1262,6 +1262,8 @@ pub struct Editor {
 
     pub idle_timer: Pin<Box<Sleep>>,
     redraw_timer: Pin<Box<Sleep>>,
+    animation_timer: Pin<Box<Sleep>>,
+    pub scroll_animations: HashMap<ViewId, crate::view::ScrollAnimation>,
     last_motion: Option<Motion>,
     pub last_completion: Option<CompleteAction>,
     pub last_cwd: Option<PathBuf>,
@@ -1304,6 +1306,7 @@ pub enum EditorEvent {
     DebuggerEvent(helix_dap::transport::AdapterMessage),
     IdleTimer,
     Redraw,
+    AnimationFrame,
 }
 
 #[derive(Debug, Clone)]
@@ -1413,6 +1416,8 @@ impl Editor {
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
+            animation_timer: Box::pin(sleep(Duration::from_secs(86400 * 365 * 30))),
+            scroll_animations: HashMap::new(),
             last_motion: None,
             last_completion: None,
             last_cwd: None,
@@ -1488,6 +1493,110 @@ impl Editor {
         self.idle_timer
             .as_mut()
             .reset(Instant::now() + config.idle_timeout);
+    }
+
+    /// Align view and start smooth scroll animation.
+    pub fn align_view_animated(&mut self, align: crate::Align) {
+        let (view, doc) = current!(self);
+        let (old_offset, new_offset) = crate::align_view(doc, view, align);
+        let view_id = view.id;
+        let text = doc.text().slice(..);
+        let from_line = text.char_to_line(old_offset.anchor) as isize
+            + old_offset.vertical_offset as isize;
+        let to_line = text.char_to_line(new_offset.anchor) as isize
+            + new_offset.vertical_offset as isize;
+        let delta = to_line - from_line;
+        self.start_scroll_animation(view_id, old_offset, new_offset, delta);
+    }
+
+    pub fn start_scroll_animation(
+        &mut self,
+        view_id: ViewId,
+        from: crate::view::ViewPosition,
+        to: crate::view::ViewPosition,
+        delta_rows: isize,
+    ) {
+        if delta_rows == 0 || from == to {
+            return;
+        }
+        self.scroll_animations.insert(
+            view_id,
+            crate::view::ScrollAnimation::new(from, to, delta_rows),
+        );
+        // Set view offset back to starting position — cursor is already at target,
+        // but viewport should animate from `from` to `to`
+        if let Some(doc) = self.documents.values_mut().find(|d| {
+            d.get_view_offset(view_id).is_some()
+        }) {
+            doc.set_view_offset(view_id, from);
+        }
+        self.animation_timer
+            .as_mut()
+            .reset(Instant::now() + Duration::from_millis(16));
+    }
+
+    pub fn tick_animations(&mut self) {
+        // Collect updates to apply after iteration
+        let mut updates: Vec<(ViewId, crate::view::ViewPosition)> = Vec::new();
+        let mut done_views = Vec::new();
+
+        for (&view_id, anim) in &self.scroll_animations {
+            if anim.is_done() {
+                updates.push((view_id, anim.to));
+                done_views.push(view_id);
+            } else {
+                let row_offset = anim.current_row_offset();
+                let from = anim.from;
+                let target = anim.to;
+
+                if let Some(view) = self.tree.try_get(view_id) {
+                    if let Some(doc) = self.documents.values().find(|d| {
+                        d.get_view_offset(view_id).is_some()
+                    }) {
+                        let doc_text = doc.text().slice(..);
+                        let viewport = view.inner_area(doc);
+                        let text_fmt = doc.text_format(viewport.width, None);
+                        let annotations = view.text_annotations(doc, None);
+
+                        let (anchor, vertical_offset) =
+                            helix_core::char_idx_at_visual_offset(
+                                doc_text,
+                                from.anchor,
+                                from.vertical_offset as isize + row_offset,
+                                0,
+                                &text_fmt,
+                                &annotations,
+                            );
+
+                        let mut pos = from;
+                        pos.anchor = anchor;
+                        pos.vertical_offset = vertical_offset;
+                        pos.horizontal_offset = target.horizontal_offset;
+                        updates.push((view_id, pos));
+                    }
+                }
+            }
+        }
+
+        // Apply all view offset updates
+        for (view_id, pos) in updates {
+            if let Some(doc) = self.documents.values_mut().find(|d| {
+                d.get_view_offset(view_id).is_some()
+            }) {
+                doc.set_view_offset(view_id, pos);
+            }
+        }
+
+        for id in done_views {
+            self.scroll_animations.remove(&id);
+        }
+
+        if !self.scroll_animations.is_empty() {
+            self.animation_timer
+                .as_mut()
+                .reset(Instant::now() + Duration::from_millis(16));
+        }
+        self.needs_redraw = true;
     }
 
     pub fn clear_status(&mut self) {
@@ -2363,6 +2472,10 @@ impl Editor {
                     }
                 }
 
+                _ = &mut self.animation_timer => {
+                    self.animation_timer.as_mut().reset(Instant::now() + Duration::from_secs(86400 * 365 * 30));
+                    return EditorEvent::AnimationFrame
+                }
                 _ = &mut self.redraw_timer  => {
                     self.redraw_timer.as_mut().reset(Instant::now() + Duration::from_secs(86400 * 365 * 30));
                     return EditorEvent::Redraw

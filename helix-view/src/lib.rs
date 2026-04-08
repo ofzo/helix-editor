@@ -49,12 +49,19 @@ pub enum Align {
     Bottom,
 }
 
-pub fn align_view(doc: &mut Document, view: &View, align: Align) {
+/// Aligns the view so that the cursor is at the given position.
+/// Returns (old_offset, new_offset) for animation purposes.
+pub fn align_view(
+    doc: &mut Document,
+    view: &View,
+    align: Align,
+) -> (view::ViewPosition, view::ViewPosition) {
+    let old_offset = doc.view_offset(view.id);
     let doc_text = doc.text().slice(..);
     let cursor = doc.selection(view.id).primary().cursor(doc_text);
     let viewport = view.inner_area(doc);
     let last_line_height = viewport.height.saturating_sub(1);
-    let mut view_offset = doc.view_offset(view.id);
+    let mut view_offset = old_offset;
 
     let relative = match align {
         Align::Center => last_line_height / 2,
@@ -72,6 +79,7 @@ pub fn align_view(doc: &mut Document, view: &View, align: Align) {
         &view.text_annotations(doc, None),
     );
     doc.set_view_offset(view.id, view_offset);
+    (old_offset, view_offset)
 }
 
 pub use document::Document;

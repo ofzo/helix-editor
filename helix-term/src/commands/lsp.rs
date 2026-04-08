@@ -14,7 +14,7 @@ use tui::{
     widgets::Row,
 };
 
-use super::{align_view, push_jump, Align, Context, Editor};
+use super::{push_jump, Align, Context, Editor};
 
 use helix_core::{
     diagnostic::DiagnosticProvider, syntax::config::LanguageServerFeature,
@@ -159,7 +159,7 @@ fn jump_to_position(
     // (for example start of the function).
     doc.set_selection(view.id, Selection::single(new_range.head, new_range.anchor));
     if action.align_view(view, doc.id()) {
-        align_view(doc, view, Align::Center);
+        editor.align_view_animated(Align::Center);
     }
 }
 
