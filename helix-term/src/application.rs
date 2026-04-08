@@ -704,6 +704,10 @@ impl Application {
                 // limit render calls for fast language server messages
                 helix_event::request_redraw();
             }
+            EditorEvent::DebuggerEvent(event) => {
+                self.handle_debugger_event(event).await;
+                helix_event::request_redraw();
+            }
             EditorEvent::Redraw => {
                 self.render().await;
             }
@@ -719,6 +723,191 @@ impl Application {
         }
 
         false
+    }
+
+    pub async fn handle_debugger_event(&mut self, message: helix_dap::transport::AdapterMessage) {
+        use helix_dap::transport::AdapterMessage;
+        match message {
+            AdapterMessage::Event(event) => {
+                let body = event.body.clone();
+                match event.event.as_str() {
+                    "initialized" => {
+                        log::info!("DAP adapter initialized");
+                        // Send configuration done
+                        if let Some(client) = self.editor.debug_session.client.clone() {
+                            // Send breakpoints for all files that have them
+                            let breakpoints: Vec<_> = self.editor.breakpoints.iter()
+                                .map(|(p, bps)| (p.to_path_buf(), bps.to_vec()))
+                                .collect();
+                            for (path, bps) in &breakpoints {
+                                let source = helix_dap::helix_dap_types::Source {
+                                    path: Some(path.clone()),
+                                    ..Default::default()
+                                };
+                                let source_bps: Vec<_> = bps.iter()
+                                    .map(|bp| bp.to_source_breakpoint())
+                                    .collect();
+                                if let Err(e) =
+                                    client.set_breakpoints(source, source_bps).await
+                                {
+                                    log::error!("failed to set breakpoints: {}", e);
+                                }
+                            }
+                            if let Err(e) = client.configuration_done().await {
+                                log::error!("failed to send configurationDone: {}", e);
+                            }
+                        }
+                    }
+                    "stopped" => {
+                        if let Some(body) = body {
+                            let reason = body
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let thread_id = body
+                                .get("threadId")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as usize);
+
+                            self.editor.debug_session.active = true;
+                            self.editor.debug_session.is_stopped = true;
+                            self.editor.debug_session.stop_reason = Some(reason.clone());
+                            if let Some(tid) = thread_id {
+                                self.editor.debug_session.active_thread_id = Some(tid);
+                            }
+
+                            // Fetch threads and stack frames
+                            if let Some(client) = self.editor.debug_session.client.clone() {
+                                if let Ok(threads_resp) = client.threads().await {
+                                    self.editor.debug_session.threads = threads_resp.threads;
+                                }
+                                if let Some(tid) =
+                                    self.editor.debug_session.active_thread_id
+                                {
+                                    match client.stack_trace(tid).await {
+                                        Ok(frames_resp) => {
+                                            self.editor.debug_session.stack_frames =
+                                                frames_resp.stack_frames;
+                                            self.editor.debug_session.active_frame_index = 0;
+
+                                            // Fetch scopes and variables for the top frame
+                                            if let Some(frame) = self.editor.debug_session.stack_frames.first() {
+                                                let frame_id = frame.id;
+                                                if let Ok(scopes_resp) = client.scopes(frame_id).await {
+                                                    let mut vars = Vec::new();
+                                                    for scope in &scopes_resp.scopes {
+                                                        if !scope.expensive {
+                                                            if let Ok(vars_resp) = client.variables(scope.variables_reference).await {
+                                                                vars.push((scope.name.clone(), helix_view::debug::session::VariableNode::from_variables(vars_resp.variables)));
+                                                            }
+                                                        }
+                                                    }
+                                                    self.editor.debug_session.scopes = scopes_resp.scopes;
+                                                    self.editor.debug_session.variables = vars;
+                                                }
+                                            }
+
+                                            // Extract frame location before borrowing editor mutably
+                                            let jump_target = self
+                                                .editor
+                                                .debug_session
+                                                .stack_frames
+                                                .first()
+                                                .and_then(|frame| {
+                                                    frame.source.as_ref()?.path.as_ref().map(|p| {
+                                                        (p.clone(), frame.line.saturating_sub(1))
+                                                    })
+                                                });
+
+                                            if let Some((path, line)) = jump_target {
+                                                if self
+                                                    .editor
+                                                    .open(&path, helix_view::editor::Action::Replace)
+                                                    .is_ok()
+                                                {
+                                                    let (view, doc) = current!(self.editor);
+                                                    let line = line.min(
+                                                        doc.text().len_lines().saturating_sub(1),
+                                                    );
+                                                    let pos = doc.text().line_to_char(line);
+                                                    doc.set_selection(
+                                                        view.id,
+                                                        Selection::point(pos),
+                                                    );
+                                                    align_view(doc, view, Align::Center);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => log::error!("stopped: stack_trace({}) failed: {e:?}", tid),
+                                    }
+                                }
+                            }
+
+                            self.editor.set_status(format!("Debugger stopped: {}", reason));
+                        }
+                    }
+                    "continued" => {
+                        self.editor.debug_session.is_stopped = false;
+                        self.editor.debug_session.stop_reason = None;
+                        self.editor.set_status("Debugger continued");
+                    }
+                    "thread" => {
+                        // Refresh threads list
+                        if let Some(client) = self.editor.debug_session.client.clone() {
+                            if let Ok(threads_resp) = client.threads().await {
+                                self.editor.debug_session.threads = threads_resp.threads;
+                            }
+                        }
+                    }
+                    "output" => {
+                        if let Some(body) = body {
+                            let category = body
+                                .get("category")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("console")
+                                .to_string();
+                            let output = body
+                                .get("output")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            self.editor
+                                .debug_session
+                                .output_lines
+                                .push((category, output));
+                        }
+                    }
+                    "terminated" | "exited" => {
+                        let msg = if event.event == "exited" {
+                            let code = body
+                                .as_ref()
+                                .and_then(|b| b.get("exitCode"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            format!("Debug session exited with code {}", code)
+                        } else {
+                            "Debug session terminated".to_string()
+                        };
+                        self.editor.debug_session.reset();
+                        self.editor.set_status(msg);
+                    }
+                    "breakpoint" => {
+                        log::debug!("DAP breakpoint event: {:?}", body);
+                    }
+                    other => {
+                        log::debug!("unhandled DAP event: {}", other);
+                    }
+                }
+            }
+            AdapterMessage::Response(response) => {
+                log::debug!(
+                    "unexpected DAP response in event stream: {} (seq {})",
+                    response.command,
+                    response.request_seq
+                );
+            }
+        }
     }
 
     pub async fn handle_terminal_events(&mut self, event: std::io::Result<TerminalEvent>) {
@@ -1375,6 +1564,15 @@ impl Application {
                 "Timed out waiting for language servers to shutdown"
             ));
         }
+
+        // Disconnect debug adapter and clean up the debug session
+        if let Some(client) = self.editor.debug_session.client.as_ref() {
+            // Send disconnect request to terminate the debuggee
+            let _ = client.disconnect(None, Some(true)).await;
+            // Kill the entire process group (adapter + all child processes)
+            client.kill_process_group();
+        }
+        self.editor.debug_session.reset();
 
         errs
     }

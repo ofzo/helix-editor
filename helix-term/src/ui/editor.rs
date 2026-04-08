@@ -50,6 +50,7 @@ pub struct EditorView {
     pub(crate) bottom_terminal: Option<TerminalPane>,
     pub(crate) float_terminal: Option<TerminalPane>,
     pub(crate) float_terminal_prewarm: Option<mpsc::Receiver<TerminalPane>>,
+    pub(crate) debug_layout: Option<super::debug::DebugLayout>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,11 +78,549 @@ impl EditorView {
             bottom_terminal: None,
             float_terminal: None,
             float_terminal_prewarm: None,
+            debug_layout: None,
         }
     }
 
     pub fn spinners_mut(&mut self) -> &mut ProgressSpinners {
         &mut self.spinners
+    }
+
+    /// Handle a key event for the debug console when it has focus.
+    fn handle_debug_console_key(
+        console: &mut super::debug::DebugConsole,
+        key: &KeyEvent,
+        context: &mut crate::compositor::Context,
+    ) -> EventResult {
+        use helix_view::keyboard::{KeyCode, KeyModifiers};
+
+        match (key.modifiers, key.code) {
+            // Escape returns focus to code
+            (_, KeyCode::Esc) => {
+                context.editor.debug_session.focus =
+                    helix_view::debug::session::DebugFocus::Code;
+                context.editor.set_status("Debug focus: Code");
+                EventResult::Consumed(None)
+            }
+            // Enter submits the expression for evaluation
+            (_, KeyCode::Enter) => {
+                let input = console.take_input();
+                if input.is_empty() {
+                    return EventResult::Consumed(None);
+                }
+
+                // Show user input in console
+                console.push_output(
+                    super::debug::console::OutputCategory::UserInput,
+                    input.clone(),
+                );
+
+                // Send evaluate request to DAP client
+                if let Some(client) = context.editor.debug_session.client.clone() {
+                    let frame_id = context.editor.debug_session.current_frame().map(|f| f.id);
+                    let callback = async move {
+                        let result = client.evaluate(input, frame_id, Some(helix_dap::helix_dap_types::EvaluateContext::Repl)).await;
+                        let call: crate::job::Callback =
+                            crate::job::Callback::EditorCompositor(Box::new(
+                                move |editor: &mut Editor, compositor: &mut crate::compositor::Compositor| {
+                                    match result {
+                                        Ok(resp) => {
+                                            if let Some(view) = compositor
+                                                .find::<EditorView>()
+                                            {
+                                                if let Some(layout) = view.debug_layout.as_mut() {
+                                                    layout.console.push_output(
+                                                        super::debug::console::OutputCategory::UserResult,
+                                                        resp.result,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            editor.set_error(format!("Evaluate failed: {e}"));
+                                            if let Some(view) = compositor
+                                                .find::<EditorView>()
+                                            {
+                                                if let Some(layout) = view.debug_layout.as_mut() {
+                                                    layout.console.push_output(
+                                                        super::debug::console::OutputCategory::Stderr,
+                                                        format!("Error: {e}"),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            ));
+                        Ok(call)
+                    };
+                    context.jobs.callback(callback);
+                } else {
+                    console.push_output(
+                        super::debug::console::OutputCategory::Stderr,
+                        "No active debug session".to_string(),
+                    );
+                }
+                EventResult::Consumed(None)
+            }
+            // Backspace
+            (_, KeyCode::Backspace) => {
+                console.backspace();
+                EventResult::Consumed(None)
+            }
+            // Arrow keys for cursor/history
+            (_, KeyCode::Left) => {
+                console.move_cursor_left();
+                EventResult::Consumed(None)
+            }
+            (_, KeyCode::Right) => {
+                console.move_cursor_right();
+                EventResult::Consumed(None)
+            }
+            (_, KeyCode::Up) => {
+                console.history_up();
+                EventResult::Consumed(None)
+            }
+            (_, KeyCode::Down) => {
+                console.history_down();
+                EventResult::Consumed(None)
+            }
+            // Page up/down for scrolling output
+            (_, KeyCode::PageUp) => {
+                console.scroll_up(10);
+                EventResult::Consumed(None)
+            }
+            (_, KeyCode::PageDown) => {
+                console.scroll_down(10);
+                EventResult::Consumed(None)
+            }
+            // Ctrl-C clears input
+            (modifiers, KeyCode::Char('c')) if modifiers.contains(KeyModifiers::CONTROL) => {
+                console.take_input();
+                EventResult::Consumed(None)
+            }
+            // Regular character input
+            (modifiers, KeyCode::Char(ch)) if !modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT) => {
+                console.insert_char(ch);
+                EventResult::Consumed(None)
+            }
+            // Consume all other keys so they don't leak to the normal keymap
+            _ => EventResult::Consumed(None),
+        }
+    }
+
+    /// Handle keyboard input when the debug sidebar has focus.
+    fn handle_debug_sidebar_key(
+        &mut self,
+        key: &KeyEvent,
+        cxt: &mut commands::Context,
+    ) -> EventResult {
+        use helix_view::keyboard::KeyCode;
+        use super::debug::sidebar::SidebarSection;
+
+        let debug_layout = match self.debug_layout.as_mut() {
+            Some(layout) => layout,
+            None => return EventResult::Ignored(None),
+        };
+
+        match (key.modifiers, key.code) {
+            // Escape returns focus to code
+            (_, KeyCode::Esc) => {
+                cxt.editor.debug_session.focus =
+                    helix_view::debug::session::DebugFocus::Code;
+                cxt.editor.set_status("Debug focus: Code");
+                EventResult::Consumed(None)
+            }
+            // j/Down: move cursor down
+            (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                let max = match debug_layout.sidebar.active_section {
+                    SidebarSection::Variables => cxt.editor.debug_session.flatten_variables().len(),
+                    SidebarSection::CallStack => cxt.editor.debug_session.stack_frames.len(),
+                    SidebarSection::Threads => cxt.editor.debug_session.threads.len(),
+                };
+                debug_layout.sidebar.move_cursor_down(max);
+                EventResult::Consumed(None)
+            }
+            // k/Up: move cursor up
+            (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                debug_layout.sidebar.move_cursor_up();
+                EventResult::Consumed(None)
+            }
+            // Tab: cycle section
+            (_, KeyCode::Tab) => {
+                let next = match debug_layout.sidebar.active_section {
+                    SidebarSection::Variables => SidebarSection::CallStack,
+                    SidebarSection::CallStack => SidebarSection::Threads,
+                    SidebarSection::Threads => SidebarSection::Variables,
+                };
+                debug_layout.sidebar.active_section = next;
+                debug_layout.sidebar.cursor = 0;
+                EventResult::Consumed(None)
+            }
+            // Enter: action on current item
+            (_, KeyCode::Enter) | (_, KeyCode::Char('l')) => {
+                let section = debug_layout.sidebar.active_section;
+                let cursor = debug_layout.sidebar.cursor;
+                match section {
+                    SidebarSection::Variables => {
+                        // Expand/collapse variable
+                        let flat_map = &debug_layout.sidebar.var_flat_map;
+                        if let Some((_y, scope_idx, path)) = flat_map.get(cursor).cloned() {
+                            return self.handle_debug_expand_variable(scope_idx, &path, cxt);
+                        }
+                    }
+                    SidebarSection::CallStack => {
+                        if cursor < cxt.editor.debug_session.stack_frames.len() {
+                            return self.handle_debug_select_frame(cursor, cxt);
+                        }
+                    }
+                    SidebarSection::Threads => {
+                        if cursor < cxt.editor.debug_session.threads.len() {
+                            return self.handle_debug_select_thread(cursor, cxt);
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            // h: collapse variable or section
+            (_, KeyCode::Char('h')) => {
+                let section = debug_layout.sidebar.active_section;
+                match section {
+                    SidebarSection::Variables => {
+                        // Try to collapse current variable (toggle if expanded)
+                        let flat_map = &debug_layout.sidebar.var_flat_map;
+                        if let Some((_y, scope_idx, path)) = flat_map.get(debug_layout.sidebar.cursor).cloned() {
+                            cxt.editor.debug_session.toggle_variable(scope_idx, &path);
+                        }
+                    }
+                    _ => {
+                        if !debug_layout.sidebar.is_collapsed(section) {
+                            debug_layout.sidebar.toggle_section(section);
+                        }
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            // Space: show full variable value in popup
+            (_, KeyCode::Char(' ')) => {
+                if debug_layout.sidebar.active_section == SidebarSection::Variables {
+                    let flat = cxt.editor.debug_session.flatten_variables();
+                    if let Some((_scope_idx, _path, node)) = flat.get(debug_layout.sidebar.cursor) {
+                        let var = &node.variable;
+                        let type_hint = var.ty.as_deref().unwrap_or("");
+                        let header = if type_hint.is_empty() {
+                            format!("**{}**", var.name)
+                        } else {
+                            format!("**{}** ({})", var.name, type_hint)
+                        };
+
+                        // Truncate value to max 3 lines
+                        let value = &var.value;
+                        let lines: Vec<&str> = value.lines().collect();
+                        let display_value = if lines.len() > 3 {
+                            let mut truncated: String = lines[..3].join("\n");
+                            truncated.push_str("\n...");
+                            truncated
+                        } else if value.chars().count() > 300 {
+                            let mut truncated: String = value.chars().take(300).collect();
+                            truncated.push_str("...");
+                            truncated
+                        } else {
+                            value.clone()
+                        };
+
+                        let content = format!("{header}\n\n```\n{display_value}\n```");
+                        let syn_loader = cxt.editor.syn_loader.clone();
+                        let popup_content = super::markdown::Markdown::new(content, syn_loader);
+
+                        // Position popup right-aligned to sidebar left edge, at the variable's row
+                        let sidebar_area = debug_layout.sidebar.content_area();
+                        let var_y = debug_layout.sidebar.var_flat_map
+                            .get(debug_layout.sidebar.cursor)
+                            .map(|(y, _, _)| *y)
+                            .unwrap_or(sidebar_area.y);
+                        let sidebar_left = sidebar_area.x.saturating_sub(1);
+
+                        let popup = super::popup::Popup::new("debug-variable-value", popup_content)
+                            .position(Some(helix_core::Position::new((var_y as usize).saturating_sub(1), 0)))
+                            .right_anchor(sidebar_left)
+                            .auto_close(true);
+
+                        return EventResult::Consumed(Some(Box::new(
+                            move |compositor: &mut crate::compositor::Compositor, _cx: &mut crate::compositor::Context| {
+                                compositor.replace_or_push("debug-variable-value", popup);
+                            },
+                        )));
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            // y: yank/copy variable value
+            (_, KeyCode::Char('y')) => {
+                if debug_layout.sidebar.active_section == SidebarSection::Variables {
+                    let flat = cxt.editor.debug_session.flatten_variables();
+                    if let Some((_scope_idx, _path, node)) = flat.get(debug_layout.sidebar.cursor) {
+                        let value = node.variable.value.clone();
+                        cxt.editor.registers.write('+', vec![value.clone()]).ok();
+                        cxt.editor.registers.write('"', vec![value]).ok();
+                        cxt.editor.set_status("Variable value yanked");
+                    }
+                }
+                EventResult::Consumed(None)
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
+
+    /// Handle single-key debug commands when stopped with Code focus.
+    fn handle_debug_code_key(
+        key: &KeyEvent,
+        cx: &mut commands::Context,
+    ) -> EventResult {
+        use helix_view::keyboard::KeyCode;
+
+        if !cx.editor.debug_session.is_stopped {
+            return EventResult::Ignored(None);
+        }
+
+        match key.code {
+            KeyCode::Char('c') => {
+                commands::debug_continue(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('n') => {
+                commands::debug_step_over(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('s') => {
+                commands::debug_step_in(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('o') => {
+                commands::debug_step_out(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('q') => {
+                commands::debug_stop(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('b') => {
+                commands::debug_toggle_breakpoint(cx);
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('1') => {
+                cx.editor.debug_session.focus =
+                    helix_view::debug::session::DebugFocus::Code;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('2') => {
+                cx.editor.debug_session.focus =
+                    helix_view::debug::session::DebugFocus::Sidebar;
+                EventResult::Consumed(None)
+            }
+            KeyCode::Char('3') => {
+                cx.editor.debug_session.focus =
+                    helix_view::debug::session::DebugFocus::Console;
+                EventResult::Consumed(None)
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
+
+    /// Handle selecting a different stack frame from the debug sidebar.
+    fn handle_debug_select_frame(
+        &mut self,
+        frame_index: usize,
+        cxt: &mut commands::Context,
+    ) -> EventResult {
+        let num_frames = cxt.editor.debug_session.stack_frames.len();
+        if frame_index >= num_frames {
+            return EventResult::Consumed(None);
+        }
+
+        // Extract frame info before mutating
+        let frame_id = cxt.editor.debug_session.stack_frames[frame_index].id;
+        let jump_target = cxt.editor.debug_session.stack_frames[frame_index]
+            .source
+            .as_ref()
+            .and_then(|s| s.path.as_ref().map(|p| {
+                (p.clone(), cxt.editor.debug_session.stack_frames[frame_index].line.saturating_sub(1))
+            }));
+        let client = cxt.editor.debug_session.client.clone();
+
+        // Update active frame index
+        cxt.editor.debug_session.active_frame_index = frame_index;
+
+        // Jump to frame source location
+        if let Some((path, line)) = jump_target {
+            if cxt.editor.open(&path, helix_view::editor::Action::Replace).is_ok() {
+                let (view, doc) = current!(cxt.editor);
+                let line = line.min(doc.text().len_lines().saturating_sub(1));
+                let pos = doc.text().line_to_char(line);
+                doc.set_selection(view.id, Selection::point(pos));
+            }
+        }
+
+        // Async: fetch scopes and variables for the new frame
+        if let Some(client) = client {
+            let callback = async move {
+                match client.scopes(frame_id).await {
+                    Ok(scopes_resp) => {
+                        let mut vars = Vec::new();
+                        for scope in &scopes_resp.scopes {
+                            if !scope.expensive {
+                                if let Ok(vars_resp) = client.variables(scope.variables_reference).await {
+                                    vars.push((scope.name.clone(), helix_view::debug::session::VariableNode::from_variables(vars_resp.variables)));
+                                }
+                            }
+                        }
+                        let scopes = scopes_resp.scopes;
+                        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                            move |editor: &mut Editor| {
+                                editor.debug_session.scopes = scopes;
+                                editor.debug_session.variables = vars;
+                            },
+                        ));
+                        Ok(call)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to fetch scopes for frame {frame_id}: {e:?}");
+                        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                            move |editor: &mut Editor| {
+                                editor.set_error(format!("Failed to fetch frame  {e}"));
+                            },
+                        ));
+                        Ok(call)
+                    }
+                }
+            };
+            cxt.jobs.callback(callback);
+        }
+
+        EventResult::Consumed(None)
+    }
+
+    /// Handle selecting a different thread from the debug sidebar.
+    fn handle_debug_select_thread(
+        &mut self,
+        thread_index: usize,
+        cxt: &mut commands::Context,
+    ) -> EventResult {
+        let num_threads = cxt.editor.debug_session.threads.len();
+        if thread_index >= num_threads {
+            return EventResult::Consumed(None);
+        }
+
+        let thread_id = cxt.editor.debug_session.threads[thread_index].id;
+        cxt.editor.debug_session.active_thread_id = Some(thread_id);
+
+        if let Some(client) = cxt.editor.debug_session.client.clone() {
+            let callback = async move {
+                // Fetch stack trace for the selected thread
+                match client.stack_trace(thread_id).await {
+                    Ok(frames_resp) => {
+                        let stack_frames = frames_resp.stack_frames;
+
+                        // Fetch scopes/variables for the top frame
+                        let (scopes, vars) = if let Some(frame) = stack_frames.first() {
+                            match client.scopes(frame.id).await {
+                                Ok(scopes_resp) => {
+                                    let mut v = Vec::new();
+                                    for scope in &scopes_resp.scopes {
+                                        if !scope.expensive {
+                                            if let Ok(vars_resp) = client.variables(scope.variables_reference).await {
+                                                v.push((scope.name.clone(), helix_view::debug::session::VariableNode::from_variables(vars_resp.variables)));
+                                            }
+                                        }
+                                    }
+                                    (scopes_resp.scopes, v)
+                                }
+                                Err(_) => (Vec::new(), Vec::new()),
+                            }
+                        } else {
+                            (Vec::new(), Vec::new())
+                        };
+
+                        // Get jump target from top frame
+                        let jump_target = stack_frames.first().and_then(|frame| {
+                            frame.source.as_ref()?.path.as_ref().map(|p| {
+                                (p.clone(), frame.line.saturating_sub(1))
+                            })
+                        });
+
+                        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                            move |editor: &mut Editor| {
+                                editor.debug_session.stack_frames = stack_frames;
+                                editor.debug_session.active_frame_index = 0;
+                                editor.debug_session.scopes = scopes;
+                                editor.debug_session.variables = vars;
+
+                                if let Some((path, line)) = jump_target {
+                                    if editor.open(&path, helix_view::editor::Action::Replace).is_ok() {
+                                        let (view, doc) = current!(editor);
+                                        let line = line.min(doc.text().len_lines().saturating_sub(1));
+                                        let pos = doc.text().line_to_char(line);
+                                        doc.set_selection(view.id, helix_core::Selection::point(pos));
+                                    }
+                                }
+                            },
+                        ));
+                        Ok(call)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to fetch stack trace for thread {}: {e:?}", thread_id);
+                        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                            move |editor: &mut Editor| {
+                                editor.set_error(format!("Failed to fetch thread data: {e}"));
+                            },
+                        ));
+                        Ok(call)
+                    }
+                }
+            };
+            cxt.jobs.callback(callback);
+        }
+
+        EventResult::Consumed(None)
+    }
+
+    /// Handle expanding/collapsing a variable in the debug sidebar.
+    fn handle_debug_expand_variable(
+        &mut self,
+        scope_idx: usize,
+        path: &[usize],
+        cxt: &mut commands::Context,
+    ) -> EventResult {
+        // Toggle the variable; returns Some(variables_reference) if async fetch needed
+        if let Some(vars_ref) = cxt.editor.debug_session.toggle_variable(scope_idx, path) {
+            if let Some(client) = cxt.editor.debug_session.client.clone() {
+                let callback = async move {
+                    match client.variables(vars_ref).await {
+                        Ok(vars_resp) => {
+                            let children = vars_resp.variables;
+                            let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                                move |editor: &mut Editor| {
+                                    editor.debug_session.set_variable_children(vars_ref, children);
+                                },
+                            ));
+                            Ok(call)
+                        }
+                        Err(e) => {
+                            log::error!("Failed to fetch variable children for ref {vars_ref}: {e:?}");
+                            let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                                move |editor: &mut Editor| {
+                                    editor.set_error(format!("Failed to fetch variables: {e}"));
+                                },
+                            ));
+                            Ok(call)
+                        }
+                    }
+                };
+                cxt.jobs.callback(callback);
+            }
+        }
+
+        EventResult::Consumed(None)
     }
 
     pub fn render_view(
@@ -106,6 +645,27 @@ impl EditorView {
 
         if is_focused && config.cursorline {
             decorations.add_decoration(Self::cursorline(doc, view, theme, &editor.mode));
+        }
+
+        // Highlight the debug execution line with a background color
+        if editor.debug_session.is_active() && editor.debug_session.is_stopped {
+            if let Some(debug_line) = Self::debug_execution_line(editor, doc) {
+                let debug_style = theme
+                    .try_get("ui.highlight")
+                    .unwrap_or_else(|| theme.get("ui.selection"));
+                let viewport = view.area;
+                decorations.add_decoration(move |renderer: &mut TextRenderer, pos: LinePos| {
+                    if pos.doc_line == debug_line {
+                        let area = helix_view::graphics::Rect::new(
+                            viewport.x,
+                            pos.visual_line,
+                            viewport.width,
+                            1,
+                        );
+                        renderer.set_style(area, debug_style);
+                    }
+                });
+            }
         }
 
         if is_focused && config.cursorcolumn {
@@ -957,6 +1517,18 @@ impl EditorView {
     }
 
     /// Apply the highlighting on the lines where a cursor is active
+    /// Get the 0-based document line where the debugger is currently stopped, if applicable.
+    fn debug_execution_line(editor: &Editor, doc: &Document) -> Option<usize> {
+        let frame = editor.debug_session.current_frame()?;
+        let frame_path = frame.source.as_ref()?.path.as_ref()?;
+        let doc_path = doc.path()?;
+        if doc_path == frame_path {
+            Some(frame.line.saturating_sub(1))
+        } else {
+            None
+        }
+    }
+
     pub fn cursorline(doc: &Document, view: &View, theme: &Theme, mode: &Mode) -> impl Decoration {
         let text = doc.text().slice(..);
         // TODO only highlight the visual line that contains the cursor instead of the full visual line
@@ -1367,6 +1939,84 @@ impl EditorView {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Handle clicks on debug sidebar
+                if cxt.editor.debug_session.is_active() {
+                    if let Some(ref mut debug_layout) = self.debug_layout {
+                        use super::debug::sidebar::SidebarAction;
+                        // Check if click is within sidebar bounds for auto-focus
+                        let sidebar_area = debug_layout.sidebar.content_area();
+                        let in_sidebar = sidebar_area.width > 0
+                            && column >= sidebar_area.x.saturating_sub(1)
+                            && column < sidebar_area.x + sidebar_area.width
+                            && row >= sidebar_area.y
+                            && row < sidebar_area.y + sidebar_area.height;
+
+                        // Check if click is in console area
+                        let console_area = debug_layout.console.last_area;
+                        let in_console = console_area.width > 0
+                            && column >= console_area.x
+                            && column < console_area.x + console_area.width
+                            && row >= console_area.y
+                            && row < console_area.y + console_area.height;
+
+                        if in_sidebar {
+                            cxt.editor.debug_session.focus =
+                                helix_view::debug::session::DebugFocus::Sidebar;
+                        } else if in_console {
+                            cxt.editor.debug_session.focus =
+                                helix_view::debug::session::DebugFocus::Console;
+                        } else {
+                            cxt.editor.debug_session.focus =
+                                helix_view::debug::session::DebugFocus::Code;
+                        }
+
+                        let action = debug_layout.sidebar.handle_mouse_click(row, column);
+                        match action {
+                            SidebarAction::ToggleSection(section) => {
+                                debug_layout.sidebar.toggle_section(section);
+                                return EventResult::Consumed(None);
+                            }
+                            SidebarAction::SelectFrame(idx) => {
+                                return self.handle_debug_select_frame(idx, cxt);
+                            }
+                            SidebarAction::SelectThread(idx) => {
+                                return self.handle_debug_select_thread(idx, cxt);
+                            }
+                            SidebarAction::ExpandVariable(scope_idx, path) => {
+                                return self.handle_debug_expand_variable(scope_idx, &path, cxt);
+                            }
+                            SidebarAction::ShowVariableValue(value) => {
+                                cxt.editor.set_status(value);
+                                return EventResult::Consumed(None);
+                            }
+                            SidebarAction::ToolbarContinue
+                            | SidebarAction::ToolbarStepOver
+                            | SidebarAction::ToolbarStepIn
+                            | SidebarAction::ToolbarStepOut
+                            | SidebarAction::ToolbarStop => {
+                                let mut cx = commands::Context {
+                                    register: None,
+                                    count: None,
+                                    editor: cxt.editor,
+                                    callback: Vec::new(),
+                                    on_next_key_callback: None,
+                                    jobs: cxt.jobs,
+                                };
+                                match action {
+                                    SidebarAction::ToolbarContinue => commands::debug_continue(&mut cx),
+                                    SidebarAction::ToolbarStepOver => commands::debug_step_over(&mut cx),
+                                    SidebarAction::ToolbarStepIn => commands::debug_step_in(&mut cx),
+                                    SidebarAction::ToolbarStepOut => commands::debug_step_out(&mut cx),
+                                    SidebarAction::ToolbarStop => commands::debug_stop(&mut cx),
+                                    _ => unreachable!(),
+                                }
+                                return EventResult::Consumed(None);
+                            }
+                            SidebarAction::None => {}
+                        }
+                    }
+                }
+
                 let editor = &mut cxt.editor;
 
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
@@ -1558,6 +2208,56 @@ impl Component for EditorView {
                 return EventResult::Consumed(callback);
             }
         }
+
+        // Route key events to debug panels when they have focus
+        if context.editor.debug_session.is_active() {
+            let focus = context.editor.debug_session.focus;
+            if let Event::Key(key) = event {
+                match focus {
+                    helix_view::debug::session::DebugFocus::Console => {
+                        if let Some(debug_layout) = self.debug_layout.as_mut() {
+                            let result = Self::handle_debug_console_key(
+                                &mut debug_layout.console,
+                                key,
+                                context,
+                            );
+                            if let EventResult::Consumed(callback) = result {
+                                return EventResult::Consumed(callback);
+                            }
+                        }
+                    }
+                    helix_view::debug::session::DebugFocus::Sidebar => {
+                        let mut cx = commands::Context {
+                            editor: context.editor,
+                            count: None,
+                            register: None,
+                            callback: Vec::new(),
+                            on_next_key_callback: None,
+                            jobs: context.jobs,
+                        };
+                        let result = self.handle_debug_sidebar_key(key, &mut cx);
+                        if let EventResult::Consumed(callback) = result {
+                            return EventResult::Consumed(callback);
+                        }
+                    }
+                    helix_view::debug::session::DebugFocus::Code => {
+                        let mut cx = commands::Context {
+                            editor: context.editor,
+                            count: None,
+                            register: None,
+                            callback: Vec::new(),
+                            on_next_key_callback: None,
+                            jobs: context.jobs,
+                        };
+                        let result = Self::handle_debug_code_key(key, &mut cx);
+                        if let EventResult::Consumed(callback) = result {
+                            return EventResult::Consumed(callback);
+                        }
+                    }
+                }
+            }
+        }
+
         let mut cx = commands::Context {
             editor: context.editor,
             count: None,
@@ -1569,6 +2269,20 @@ impl Component for EditorView {
 
         match event {
             Event::Paste(contents) => {
+                // If debug console is focused, paste into console input
+                if cx.editor.debug_session.is_active()
+                    && cx.editor.debug_session.focus == helix_view::debug::DebugFocus::Console
+                {
+                    if let Some(ref mut debug_layout) = self.debug_layout {
+                        for ch in contents.chars() {
+                            if ch != '\n' && ch != '\r' {
+                                debug_layout.console.insert_char(ch);
+                            }
+                        }
+                    }
+                    return EventResult::Consumed(None);
+                }
+
                 self.handle_non_key_input(&mut cx);
                 cx.count = cx.editor.count;
                 commands::paste_bracketed_value(&mut cx, contents.clone());
@@ -1770,6 +2484,15 @@ impl Component for EditorView {
             editor_area
         };
 
+        // Debug layout — clip editor area for sidebar and console when active
+        let (editor_area, debug_areas) = if cx.editor.debug_session.is_active() {
+            let areas = super::debug::layout::DebugLayout::compute_layout(editor_area);
+            (areas.editor, Some(areas))
+        } else {
+            self.debug_layout = None;
+            (editor_area, None)
+        };
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
@@ -1791,6 +2514,15 @@ impl Component for EditorView {
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             self.render_view(cx.editor, doc, view, area, surface, is_focused);
+        }
+
+        // Render debug layout panels (sidebar + console) when debug is active
+        if let Some(areas) = debug_areas {
+            let debug_layout = self
+                .debug_layout
+                .get_or_insert_with(super::debug::DebugLayout::new);
+            debug_layout.sidebar.render(areas.sidebar, surface, cx);
+            debug_layout.console.render(areas.console, surface, cx);
         }
 
         if config.auto_info {

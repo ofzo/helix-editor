@@ -39,6 +39,8 @@ pub struct Popup<T: Component> {
     ignore_escape_key: bool,
     id: &'static str,
     has_scrollbar: bool,
+    /// If set, the popup's right edge will not exceed this column (right-aligned).
+    right_anchor: Option<u16>,
 }
 
 impl<T: Component> Popup<T> {
@@ -53,6 +55,7 @@ impl<T: Component> Popup<T> {
             ignore_escape_key: false,
             id,
             has_scrollbar: true,
+            right_anchor: None,
         }
     }
 
@@ -75,6 +78,12 @@ impl<T: Component> Popup<T> {
     /// chosen direction.
     pub fn position_bias(mut self, bias: Open) -> Self {
         self.position_bias = bias;
+        self
+    }
+
+    /// Constrain the popup so its right edge does not exceed this column.
+    pub fn right_anchor(mut self, col: u16) -> Self {
+        self.right_anchor = Some(col);
         self
     }
 
@@ -196,7 +205,12 @@ impl<T: Component> Popup<T> {
         if render_borders {
             width += 2;
         }
-        if viewport.width <= rel_x + width + 2 {
+        // If right_anchor is set, right-align the popup so its right edge = right_anchor
+        if let Some(anchor) = self.right_anchor {
+            let max_w = anchor;
+            width = width.min(max_w);
+            rel_x = anchor.saturating_sub(width);
+        } else if viewport.width <= rel_x + width + 2 {
             rel_x = viewport.width.saturating_sub(width + 2);
             width = viewport.width.saturating_sub(rel_x + 2)
         }

@@ -1023,6 +1023,9 @@ pub struct Gutter {
     added: Option<String>,
     modified: Option<String>,
     removed: Option<String>,
+    breakpoint: Option<String>,
+    breakpoint_verified: Option<String>,
+    current_line: Option<String>,
 }
 
 impl Gutter {
@@ -1039,6 +1042,21 @@ impl Gutter {
     #[inline]
     pub fn removed(&self) -> &str {
         self.removed.as_deref().unwrap_or("▔")
+    }
+
+    #[inline]
+    pub fn breakpoint(&self) -> &str {
+        self.breakpoint.as_deref().unwrap_or("●")
+    }
+
+    #[inline]
+    pub fn breakpoint_verified(&self) -> &str {
+        self.breakpoint_verified.as_deref().unwrap_or("●")
+    }
+
+    #[inline]
+    pub fn current_line(&self) -> &str {
+        self.current_line.as_deref().unwrap_or("▶")
     }
 }
 

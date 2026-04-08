@@ -3151,6 +3151,494 @@ fn bottom_term(
     Ok(())
 }
 
+// --- Debug commands ---
+
+fn debug_toggle_breakpoint(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let path = doc
+        .path()
+        .ok_or_else(|| anyhow::anyhow!("Buffer has no file path"))?
+        .clone();
+
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    let line = text.char_to_line(cursor);
+
+    let added = cx.editor.breakpoints.toggle(path.clone(), line);
+    cx.editor.set_status(if added {
+        format!("Breakpoint added at line {}", line + 1)
+    } else {
+        format!("Breakpoint removed from line {}", line + 1)
+    });
+
+    // Sync with DAP adapter if session is active
+    if let Some(client) = cx.editor.debug_session.client.clone() {
+        let source_bps: Vec<_> = cx
+            .editor
+            .breakpoints
+            .get(&path)
+            .map(|bps| bps.iter().map(|bp| bp.to_source_breakpoint()).collect())
+            .unwrap_or_default();
+        let source = helix_dap::helix_dap_types::Source {
+            path: Some(path),
+            ..Default::default()
+        };
+        let callback = async move {
+            let _ = client.set_breakpoints(source, source_bps).await;
+            let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(|_| {}));
+            Ok(call)
+        };
+        cx.jobs.callback(callback);
+    }
+
+    Ok(())
+}
+
+fn debug_clear_breakpoints(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let count = cx.editor.breakpoints.count();
+    cx.editor.breakpoints.clear_all();
+    cx.editor
+        .set_status(format!("Cleared {count} breakpoint(s)"));
+    Ok(())
+}
+
+fn debug_start(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if cx.editor.debug_session.is_active() {
+        anyhow::bail!("Debug session already active. Use :debug-stop first.");
+    }
+
+    // Collect user-provided arguments for template substitution
+    let user_args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
+
+    let doc = doc!(cx.editor);
+    let doc_path = doc.path().cloned();
+    let working_dir = helix_stdx::env::current_working_dir();
+    let config = doc
+        .language_config()
+        .and_then(|lc| lc.debugger.clone())
+        .ok_or_else(|| anyhow::anyhow!("No debugger configured for this language"))?;
+
+    let template = config.templates.first().cloned();
+    let adapter_config = helix_dap::client::AdapterConfig {
+        command: config.command.clone(),
+        args: config.args.clone(),
+        port: None,
+    };
+
+    use helix_core::syntax::config::DebugAdapterTransport;
+
+    // Collect breakpoints before entering the async callback
+    let breakpoints: Vec<_> = cx
+        .editor
+        .breakpoints
+        .iter()
+        .map(|(p, bps)| (p.to_path_buf(), bps.to_vec()))
+        .collect();
+
+    match config.transport {
+        DebugAdapterTransport::Stdio => {
+            let (mut client, mut event_rx) =
+                helix_dap::Client::start(&adapter_config, config.name.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to start debug adapter: {}", e))?;
+
+            cx.editor.debug_session.active = true;
+            cx.editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
+            cx.editor.set_status("Starting debug adapter (stdio)...");
+
+            let callback = async move {
+                // Step 1: Initialize
+                let _caps = client
+                    .initialize(config.name.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DAP initialize failed: {}", e))?;
+
+                // Step 2: Send launch/attach WITHOUT awaiting
+                let launch_args = if let Some(ref tmpl) = template {
+                    let defaults = super::collect_template_defaults(tmpl, doc_path.as_deref(), &working_dir);
+                    let sub_args_list: Vec<String> = user_args.iter().enumerate().map(|(i, a)| {
+                        if a.is_empty() {
+                            defaults.get(i).cloned().unwrap_or_default()
+                        } else {
+                            a.clone()
+                        }
+                    }).chain(defaults.iter().skip(user_args.len()).cloned()).collect();
+                    super::substitute_template_args(&tmpl.args, &sub_args_list)
+                } else {
+                    serde_json::json!({})
+                };
+                let launch_command = template
+                    .as_ref()
+                    .filter(|t| t.request == "attach")
+                    .map(|_| "attach")
+                    .unwrap_or("launch");
+                let launch_rx = client
+                    .send_request(launch_command, Some(launch_args))
+                    .map_err(|e| anyhow::anyhow!("Failed to send DAP {}: {}", launch_command, e))?;
+
+                // Step 3: Wait for the "initialized" event
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                loop {
+                    match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                        Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
+                            if ev.event == "initialized" =>
+                        {
+                            break;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => return Err(anyhow::anyhow!("DAP event stream closed before initialized")),
+                        Err(_) => return Err(anyhow::anyhow!("Timed out waiting for DAP initialized event")),
+                    }
+                }
+
+                // Step 4: Send breakpoints + configurationDone
+                for (path, bps) in &breakpoints {
+                    let source = helix_dap::helix_dap_types::Source {
+                        path: Some(path.clone()),
+                        ..Default::default()
+                    };
+                    let source_bps: Vec<_> = bps.iter()
+                        .map(|bp| bp.to_source_breakpoint())
+                        .collect();
+                    let _ = client.set_breakpoints(source, source_bps).await;
+                }
+                client.configuration_done().await
+                    .map_err(|e| anyhow::anyhow!("DAP configurationDone failed: {}", e))?;
+
+                // Step 5: Await launch response
+                let timeout = tokio::time::Duration::from_secs(30);
+                match tokio::time::timeout(timeout, launch_rx).await {
+                    Ok(Ok(Ok(_))) => {}
+                    Ok(Ok(Err(e))) => return Err(anyhow::anyhow!("DAP {} failed: {}", launch_command, e)),
+                    Ok(Err(_)) => return Err(anyhow::anyhow!("DAP {} response channel closed", launch_command)),
+                    Err(_) => return Err(anyhow::anyhow!("DAP {} timed out", launch_command)),
+                }
+
+                let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                    move |editor: &mut helix_view::Editor| {
+                        editor.debug_session.event_rx = Some(event_rx);
+                        editor.debug_session.adapter_pid = client.process_id();
+                        editor.debug_session.client = Some(std::sync::Arc::new(client));
+                        editor.set_status("Debug adapter connected (stdio)");
+                    },
+                ));
+                Ok(call)
+            };
+            cx.jobs.callback(callback);
+        }
+        DebugAdapterTransport::Tcp => {
+            let port_arg = config.port_arg.clone().unwrap_or_else(|| "{}".to_string());
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| anyhow::anyhow!("Failed to allocate port: {}", e))?
+                .local_addr()
+                .unwrap()
+                .port();
+
+            cx.editor.debug_session.active = true;
+            cx.editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
+            cx.editor
+                .set_status(format!("Starting debug adapter (tcp:{})...", port));
+
+            let callback = async move {
+                let (mut client, mut event_rx) = helix_dap::Client::start_tcp(
+                    &adapter_config,
+                    port,
+                    &port_arg,
+                    config.name.clone(),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start TCP debug adapter: {}", e))?;
+
+                // Step 1: Initialize
+                let _caps = client
+                    .initialize(config.name.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DAP initialize failed: {}", e))?;
+
+                // Step 2: Send launch/attach WITHOUT awaiting
+                let launch_args = if let Some(ref tmpl) = template {
+                    let defaults = super::collect_template_defaults(tmpl, doc_path.as_deref(), &working_dir);
+                    let sub_args_list: Vec<String> = user_args.iter().enumerate().map(|(i, a)| {
+                        if a.is_empty() {
+                            defaults.get(i).cloned().unwrap_or_default()
+                        } else {
+                            a.clone()
+                        }
+                    }).chain(defaults.iter().skip(user_args.len()).cloned()).collect();
+                    super::substitute_template_args(&tmpl.args, &sub_args_list)
+                } else {
+                    serde_json::json!({})
+                };
+                let launch_command = template
+                    .as_ref()
+                    .filter(|t| t.request == "attach")
+                    .map(|_| "attach")
+                    .unwrap_or("launch");
+                let launch_rx = client
+                    .send_request(launch_command, Some(launch_args))
+                    .map_err(|e| anyhow::anyhow!("Failed to send DAP {}: {}", launch_command, e))?;
+
+                // Step 3: Wait for the "initialized" event
+                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                loop {
+                    match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                        Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
+                            if ev.event == "initialized" =>
+                        {
+                            break;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => return Err(anyhow::anyhow!("DAP event stream closed before initialized")),
+                        Err(_) => return Err(anyhow::anyhow!("Timed out waiting for DAP initialized event")),
+                    }
+                }
+
+                // Step 4: Send breakpoints + configurationDone
+                for (path, bps) in &breakpoints {
+                    let source = helix_dap::helix_dap_types::Source {
+                        path: Some(path.clone()),
+                        ..Default::default()
+                    };
+                    let source_bps: Vec<_> = bps.iter()
+                        .map(|bp| bp.to_source_breakpoint())
+                        .collect();
+                    let _ = client.set_breakpoints(source, source_bps).await;
+                }
+                client.configuration_done().await
+                    .map_err(|e| anyhow::anyhow!("DAP configurationDone failed: {}", e))?;
+
+                // Step 5: Await launch response
+                let timeout = tokio::time::Duration::from_secs(30);
+                match tokio::time::timeout(timeout, launch_rx).await {
+                    Ok(Ok(Ok(_))) => {}
+                    Ok(Ok(Err(e))) => return Err(anyhow::anyhow!("DAP {} failed: {}", launch_command, e)),
+                    Ok(Err(_)) => return Err(anyhow::anyhow!("DAP {} response channel closed", launch_command)),
+                    Err(_) => return Err(anyhow::anyhow!("DAP {} timed out", launch_command)),
+                }
+
+                let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                    move |editor: &mut helix_view::Editor| {
+                        editor.debug_session.event_rx = Some(event_rx);
+                        editor.debug_session.adapter_pid = client.process_id();
+                        editor.debug_session.client =
+                            Some(std::sync::Arc::new(client));
+                        editor
+                            .set_status(format!("Debug adapter connected (tcp:{})", port));
+                    },
+                ));
+                Ok(call)
+            };
+            cx.jobs.callback(callback);
+        }
+    }
+
+    Ok(())
+}
+
+fn debug_stop(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if !cx.editor.debug_session.is_active() {
+        anyhow::bail!("No active debug session.");
+    }
+
+    if let Some(client) = cx.editor.debug_session.client.clone() {
+        let callback = async move {
+            let _ = client.disconnect(None, Some(true)).await;
+            let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                move |editor: &mut helix_view::Editor| {
+                    editor.debug_session.reset();
+                    editor.set_status("Debug session ended.");
+                },
+            ));
+            Ok(call)
+        };
+        cx.jobs.callback(callback);
+    } else {
+        cx.editor.debug_session.reset();
+        cx.editor.set_status("Debug session ended.");
+    }
+    Ok(())
+}
+
+fn debug_continue(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let client = cx
+        .editor
+        .debug_session
+        .client
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("No active debug session."))?;
+    let thread_id = cx
+        .editor
+        .debug_session
+        .active_thread_id
+        .ok_or_else(|| anyhow::anyhow!("No active thread to continue."))?;
+
+    let callback = async move {
+        client
+            .resume(thread_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("DAP continue failed: {}", e))?;
+        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+            move |editor: &mut helix_view::Editor| {
+                editor.debug_session.is_stopped = false;
+                editor.set_status("Continuing...");
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn debug_step_over(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let client = cx
+        .editor
+        .debug_session
+        .client
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("No active debug session."))?;
+    let thread_id = cx
+        .editor
+        .debug_session
+        .active_thread_id
+        .ok_or_else(|| anyhow::anyhow!("No active thread."))?;
+
+    let callback = async move {
+        client
+            .next(thread_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("DAP step over failed: {}", e))?;
+        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+            move |editor: &mut helix_view::Editor| {
+                editor.set_status("Stepping over...");
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn debug_step_in(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let client = cx
+        .editor
+        .debug_session
+        .client
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("No active debug session."))?;
+    let thread_id = cx
+        .editor
+        .debug_session
+        .active_thread_id
+        .ok_or_else(|| anyhow::anyhow!("No active thread."))?;
+
+    let callback = async move {
+        client
+            .step_in(thread_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("DAP step in failed: {}", e))?;
+        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+            move |editor: &mut helix_view::Editor| {
+                editor.set_status("Stepping in...");
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn debug_step_out(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let client = cx
+        .editor
+        .debug_session
+        .client
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("No active debug session."))?;
+    let thread_id = cx
+        .editor
+        .debug_session
+        .active_thread_id
+        .ok_or_else(|| anyhow::anyhow!("No active thread."))?;
+
+    let callback = async move {
+        client
+            .step_out(thread_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("DAP step out failed: {}", e))?;
+        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+            move |editor: &mut helix_view::Editor| {
+                editor.set_status("Stepping out...");
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -4294,7 +4782,95 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
-    }
+    },
+    TypableCommand {
+        name: "debug-toggle-breakpoint",
+        aliases: &["db"],
+        doc: "Toggle a breakpoint on the current line.",
+        fun: debug_toggle_breakpoint,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-clear-breakpoints",
+        aliases: &[],
+        doc: "Remove all breakpoints from all files.",
+        fun: debug_clear_breakpoints,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-start",
+        aliases: &["ds"],
+        doc: "Activate debug mode overlay.",
+        fun: debug_start,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-stop",
+        aliases: &[],
+        doc: "Stop the active debug session and exit debug mode.",
+        fun: debug_stop,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-continue",
+        aliases: &["dc"],
+        doc: "Resume execution in the debug session.",
+        fun: debug_continue,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-step-over",
+        aliases: &["dso"],
+        doc: "Step over the current line in the debug session.",
+        fun: debug_step_over,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-step-in",
+        aliases: &["dsi"],
+        doc: "Step into the current function call in the debug session.",
+        fun: debug_step_in,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "debug-step-out",
+        aliases: &[],
+        doc: "Step out of the current function in the debug session.",
+        fun: debug_step_out,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
 ];
 
 pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =

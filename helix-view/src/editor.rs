@@ -1287,6 +1287,11 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+
+    /// Debug session state (active session, connection, threads, stack frames).
+    pub debug_session: crate::debug::DebugSession,
+    /// Breakpoints stored per file path.
+    pub breakpoints: crate::debug::BreakpointStore,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1296,6 +1301,7 @@ pub enum EditorEvent {
     DocumentSaved(DocumentSavedEventResult),
     ConfigEvent(ConfigEvent),
     LanguageServerMessage((LanguageServerId, Call)),
+    DebuggerEvent(helix_dap::transport::AdapterMessage),
     IdleTimer,
     Redraw,
 }
@@ -1419,6 +1425,8 @@ impl Editor {
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
+            debug_session: crate::debug::DebugSession::default(),
+            breakpoints: crate::debug::BreakpointStore::new(),
         }
     }
 
@@ -2336,6 +2344,14 @@ impl Editor {
                 }
                 Some(message) = self.language_servers.incoming.next() => {
                     return EditorEvent::LanguageServerMessage(message)
+                }
+                Some(msg) = async {
+                    match self.debug_session.event_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    return EditorEvent::DebuggerEvent(msg)
                 }
                 _ = helix_event::redraw_requested() => {
                     if  !self.needs_redraw{

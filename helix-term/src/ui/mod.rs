@@ -1,4 +1,5 @@
 mod completion;
+pub mod debug;
 mod document;
 pub(crate) mod editor;
 mod explorer;

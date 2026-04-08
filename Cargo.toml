@@ -7,6 +7,8 @@ members = [
   "helix-tui",
   "helix-lsp-types",
   "helix-lsp",
+  "helix-dap-types",
+  "helix-dap",
   "helix-event",
   "helix-loader",
   "helix-vcs",

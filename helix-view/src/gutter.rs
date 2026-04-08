@@ -274,13 +274,74 @@ pub fn padding<'doc>(
 }
 
 pub fn diagnostics_or_breakpoints<'doc>(
-    _editor: &'doc Editor,
+    editor: &'doc Editor,
     doc: &'doc Document,
     view: &View,
     theme: &Theme,
     is_focused: bool,
 ) -> GutterFn<'doc> {
-    diagnostic(doc, view, theme, is_focused)
+    let doc_path = doc.path();
+    let breakpoints = doc_path.and_then(|path| editor.breakpoints.get(path));
+    let has_breakpoints = breakpoints.is_some_and(|bps| !bps.is_empty());
+
+    // Determine if there's an active debug session with a current frame pointing to this doc
+    let current_execution_line = if editor.debug_session.is_active() {
+        editor
+            .debug_session
+            .current_frame()
+            .and_then(|frame| {
+                let frame_path = frame.source.as_ref()?.path.as_ref()?;
+                if doc_path.is_some_and(|p| p == frame_path) {
+                    Some(frame.line.saturating_sub(1)) // DAP is 1-based, gutter is 0-based
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    if !has_breakpoints && current_execution_line.is_none() {
+        return diagnostic(doc, view, theme, is_focused);
+    }
+
+    let mut diagnostic_fn = diagnostic(doc, view, theme, is_focused);
+
+    let breakpoint_style = theme.try_get("ui.debug.breakpoint").unwrap_or_else(|| theme.get("error"));
+    let breakpoint_verified_style = theme.try_get("ui.debug.breakpoint.verified").unwrap_or(breakpoint_style);
+    let execution_style = theme.try_get("ui.debug.current_line").unwrap_or_else(|| theme.get("warning"));
+
+    Box::new(
+        move |line: usize, selected: bool, first_visual_line: bool, out: &mut String| {
+            if !first_visual_line {
+                return None;
+            }
+
+            // Current execution line takes highest priority
+            if current_execution_line == Some(line) {
+                let icons = ICONS.load_full();
+                out.push_str(icons.ui().gutter().current_line());
+                return Some(execution_style);
+            }
+
+            // Breakpoints take next priority
+            if let Some(bps) = breakpoints {
+                if let Some(bp) = bps.iter().find(|bp| bp.effective_line() == line) {
+                    let icons = ICONS.load_full();
+                    if bp.verified {
+                        out.push_str(icons.ui().gutter().breakpoint_verified());
+                        return Some(breakpoint_verified_style);
+                    } else {
+                        out.push_str(icons.ui().gutter().breakpoint());
+                        return Some(breakpoint_style);
+                    }
+                }
+            }
+
+            // Fall through to diagnostics
+            diagnostic_fn(line, selected, first_visual_line, out)
+        },
+    )
 }
 
 #[cfg(test)]

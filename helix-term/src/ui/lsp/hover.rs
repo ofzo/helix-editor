@@ -16,6 +16,8 @@ use crate::ui::Markdown;
 pub struct Hover {
     active_index: usize,
     contents: Vec<(Option<Markdown>, Markdown)>,
+    /// Debug value to display above the LSP hover content.
+    debug_value: Option<Markdown>,
 }
 
 impl Hover {
@@ -47,7 +49,13 @@ impl Hover {
         Self {
             active_index: usize::default(),
             contents,
+            debug_value: None,
         }
+    }
+
+    pub fn set_debug_value(&mut self, value: String, config_loader: Arc<ArcSwap<syntax::Loader>>) {
+        let content = format!("```\n{value}\n```");
+        self.debug_value = Some(Markdown::new(content, config_loader));
     }
 
     fn has_header(&self) -> bool {
@@ -74,33 +82,49 @@ impl Component for Hover {
     fn render(&mut self, area: Rect, surface: &mut Buffer, cx: &mut Context) {
         let margin = Margin::all(1);
         let area = area.inner(margin);
+        let mut y_offset: u16 = 0;
+
+        // Render debug value section at the top
+        if let Some(ref debug_md) = self.debug_value {
+            let debug_text = debug_md.parse(Some(&cx.editor.theme));
+            let (_, debug_height) = crate::ui::text::required_size(&debug_text, area.width);
+            let debug_para = Paragraph::new(&debug_text).wrap(Wrap { trim: false });
+            debug_para.render(area.clip_top(y_offset).with_height(debug_height), surface);
+            y_offset += debug_height;
+
+            // Draw separator between debug value and LSP hover
+            let sep_style = Style::default();
+            let borders = BorderType::line_symbols(BorderType::Plain);
+            for x in area.left()..area.right() {
+                if let Some(cell) = surface.get_mut(x, area.top() + y_offset) {
+                    cell.set_symbol(borders.horizontal).set_style(sep_style);
+                }
+            }
+            y_offset += SEPARATOR_HEIGHT;
+        }
 
         let (header, contents) = self.content();
 
         // show header and border only when more than one results
         if let Some(header) = header {
-            // header LSP Name
             let header = header.parse(Some(&cx.editor.theme));
             let header = Paragraph::new(&header);
-            header.render(area.with_height(HEADER_HEIGHT), surface);
+            header.render(area.clip_top(y_offset).with_height(HEADER_HEIGHT), surface);
+            y_offset += HEADER_HEIGHT;
 
-            // border
             let sep_style = Style::default();
             let borders = BorderType::line_symbols(BorderType::Plain);
             for x in area.left()..area.right() {
-                if let Some(cell) = surface.get_mut(x, area.top() + HEADER_HEIGHT) {
+                if let Some(cell) = surface.get_mut(x, area.top() + y_offset) {
                     cell.set_symbol(borders.horizontal).set_style(sep_style);
                 }
             }
+            y_offset += SEPARATOR_HEIGHT;
         }
 
         // hover content
         let contents = contents.parse(Some(&cx.editor.theme));
-        let contents_area = area.clip_top(if self.has_header() {
-            HEADER_HEIGHT + SEPARATOR_HEIGHT
-        } else {
-            0
-        });
+        let contents_area = area.clip_top(y_offset);
         let contents_para = Paragraph::new(&contents)
             .wrap(Wrap { trim: false })
             .scroll((cx.scroll.unwrap_or_default() as u16, 0));
@@ -109,6 +133,15 @@ impl Component for Hover {
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
         let max_text_width = viewport.0.saturating_sub(PADDING_HORIZONTAL).clamp(10, 120);
+
+        // Debug value section size
+        let (debug_width, debug_height) = if let Some(ref debug_md) = self.debug_value {
+            let debug_text = debug_md.parse(None);
+            let (w, h) = crate::ui::text::required_size(&debug_text, max_text_width);
+            (w, h + SEPARATOR_HEIGHT)
+        } else {
+            (0, 0)
+        };
 
         let (header, contents) = self.content();
 
@@ -125,11 +158,11 @@ impl Component for Hover {
         let (content_width, content_height) =
             crate::ui::text::required_size(&contents, max_text_width);
 
-        let width = PADDING_HORIZONTAL + header_width.max(content_width);
+        let width = PADDING_HORIZONTAL + header_width.max(content_width).max(debug_width);
         let height = if self.has_header() {
-            PADDING_TOP + HEADER_HEIGHT + SEPARATOR_HEIGHT + content_height + PADDING_BOTTOM
+            PADDING_TOP + debug_height + HEADER_HEIGHT + SEPARATOR_HEIGHT + content_height + PADDING_BOTTOM
         } else {
-            PADDING_TOP + content_height + PADDING_BOTTOM
+            PADDING_TOP + debug_height + content_height + PADDING_BOTTOM
         };
 
         Some((width, height))

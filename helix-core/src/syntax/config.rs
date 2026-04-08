@@ -17,6 +17,8 @@ pub struct Configuration {
     pub language: Vec<LanguageConfiguration>,
     #[serde(default)]
     pub language_server: HashMap<String, LanguageServerConfiguration>,
+    #[serde(default)]
+    pub debug_adapter: HashMap<String, DebugAdapterConfiguration>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -80,6 +82,8 @@ pub struct LanguageConfiguration {
         deserialize_with = "deserialize_lang_features"
     )]
     pub language_servers: Vec<LanguageServerFeatures>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debugger: Option<DebugAdapterConfiguration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<IndentationConfiguration>,
 
@@ -441,6 +445,83 @@ pub struct LanguageServerConfiguration {
     pub timeout: u64,
     #[serde(default)]
     pub required_root_patterns: Option<GlobSet>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DebugAdapterConfiguration {
+    pub name: String,
+    pub transport: DebugAdapterTransport,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_arg: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<DebugTemplate>,
+    #[serde(default)]
+    pub quirks: DebuggerQuirks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DebugAdapterTransport {
+    Stdio,
+    Tcp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DebugTemplate {
+    pub name: String,
+    pub request: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completion: Vec<DebugConfigCompletion>,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DebugConfigCompletion {
+    Simple(String),
+    Advanced {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<String>,
+    },
+}
+
+impl DebugConfigCompletion {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Simple(name) => name,
+            Self::Advanced { name, .. } => name,
+        }
+    }
+
+    pub fn completion_type(&self) -> Option<&str> {
+        match self {
+            Self::Simple(_) => None,
+            Self::Advanced { completion, .. } => completion.as_deref(),
+        }
+    }
+
+    pub fn default_value(&self) -> Option<&str> {
+        match self {
+            Self::Simple(_) => None,
+            Self::Advanced { default, .. } => default.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct DebuggerQuirks {
+    #[serde(default)]
+    pub absolute_paths: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

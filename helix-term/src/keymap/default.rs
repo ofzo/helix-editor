@@ -276,6 +276,11 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "C" => toggle_block_comments,
             "A-c" => toggle_line_comments,
             "?" => command_palette,
+            "x" => { "Debug"
+                "b" => debug_toggle_breakpoint,
+                "s" => debug_start,
+                "a" => debug_attach,
+            },
         },
         "z" => { "View"
             "z" | "c" => align_view_center,

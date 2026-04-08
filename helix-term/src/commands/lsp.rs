@@ -1230,6 +1230,26 @@ pub fn hover(cx: &mut Context) {
         return;
     }
 
+    // Extract word under cursor for DAP evaluate (if debug is active and stopped)
+    let dap_eval_future = if cx.editor.debug_session.is_active() && cx.editor.debug_session.is_stopped {
+        let text = doc.text().slice(..);
+        let primary = doc.selection(view.id).primary();
+        use helix_core::textobject::{textobject_word, TextObject};
+        let word_range = textobject_word(text, primary, TextObject::Inside, 1, false);
+        let word = word_range.fragment(text).to_string();
+
+        if let Some(client) = cx.editor.debug_session.client.clone() {
+            let frame_id = cx.editor.debug_session.current_frame().map(|f| f.id);
+            Some(async move {
+                client.evaluate(word, frame_id, Some(helix_dap::helix_dap_types::EvaluateContext::Hover)).await.ok()
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut seen_language_servers = HashSet::new();
     let mut futures: FuturesUnordered<_> = doc
         .language_servers_with_feature(LanguageServerFeature::Hover)
@@ -1257,14 +1277,23 @@ pub fn hover(cx: &mut Context) {
             }
         }
 
+        let dap_result = if let Some(fut) = dap_eval_future {
+            fut.await
+        } else {
+            None
+        };
+
         let call = move |editor: &mut Editor, compositor: &mut Compositor| {
-            if hovers.is_empty() {
+            if hovers.is_empty() && dap_result.is_none() {
                 editor.set_status("No hover results available.");
                 return;
             }
 
             // create new popup
-            let contents = Hover::new(hovers, editor.syn_loader.clone());
+            let mut contents = Hover::new(hovers, editor.syn_loader.clone());
+            if let Some(eval_resp) = dap_result {
+                contents.set_debug_value(eval_resp.result, editor.syn_loader.clone());
+            }
             let popup = Popup::new(Hover::ID, contents).auto_close(true);
             compositor.replace_or_push(Hover::ID, popup);
         };

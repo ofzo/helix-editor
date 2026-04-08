@@ -318,6 +318,30 @@ args = ["server", "--stdio"]
 [language-server.drools-lsp]
 command = "drools-lsp"
 
+# Debug adapter definitions
+# See DAP specification: https://microsoft.github.io/debug-adapter-protocol/
+
+[debug-adapter.js-debug-dap]
+name = "js-debug-dap"
+transport = "tcp"
+command = "js-debug-dap"
+port-arg = "{} 127.0.0.1"
+
+[debug-adapter.js-debug-dap.quirks]
+absolute-paths = true
+
+[[debug-adapter.js-debug-dap.templates]]
+name = "source"
+request = "launch"
+completion = [ { name = "main", completion = "filename", default = "index.js" } ]
+args = { type = "pwa-node", program = "{0}", cwd = ".", skipFiles = [ "<node_internals>/**" ], console = "internalConsole" }
+
+[[debug-adapter.js-debug-dap.templates]]
+name = "attach"
+request = "attach"
+completion = [ { name = "port", default = "9229" } ]
+args = { type = "pwa-node", port = "{0}" }
+
 [[language]]
 name = "rust"
 scope = "source.rust"
