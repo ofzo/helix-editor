@@ -2498,6 +2498,7 @@ impl Component for EditorView {
 
         if let Some(explorer) = self.explorer.as_mut() {
             if !explorer.is_focus() {
+                explorer.sync_with_current_doc(cx.editor);
                 let area = if use_bufferline {
                     area.clip_top(1)
                 } else {

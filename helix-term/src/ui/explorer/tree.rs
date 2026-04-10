@@ -952,13 +952,7 @@ fn render_tree<'a, T: TreeViewItem>(
         };
 
 
-        let editor_config = cx.editor.config.load();
-
         indent.0.push(indicator);
-        prefix.0.push(Span::styled(
-            editor_config.indent_guides.character.to_string(),
-            cx.editor.theme.get("ui.virtual.indent-guide"),
-        ));
         prefix.0.push(Span::raw(" "));
     }
 

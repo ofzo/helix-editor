@@ -328,6 +328,19 @@ impl Explorer {
         }
     }
 
+    /// Silently sync the tree selection to match the currently active document.
+    /// Does not change explorer focus/open state. If the file is outside the
+    /// explorer root or hidden, the selection is left unchanged.
+    pub fn sync_with_current_doc(&mut self, editor: &Editor) {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.get(view_id).doc;
+        if let Some(doc) = editor.document(doc_id) {
+            if let Some(path) = doc.path().cloned() {
+                let _ = self.reveal_file(path);
+            }
+        }
+    }
+
     pub fn focus(&mut self) {
         self.state.focus = true;
         self.state.open = true;
