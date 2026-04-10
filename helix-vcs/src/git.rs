@@ -20,6 +20,15 @@ use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
 
 use crate::FileChange;
 
+/// Structured blame information for a single line.
+pub struct BlameInfo {
+    pub commit_hash: String,
+    pub author: String,
+    pub author_mail: String,
+    pub author_time: String,
+    pub summary: String,
+}
+
 #[cfg(test)]
 mod test;
 
@@ -299,4 +308,122 @@ pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
         .iter()
         .map(|p| ignored_set.contains(p.as_os_str()))
         .collect()
+}
+
+/// Get blame information for a specific line in a file.
+/// `line` is 1-indexed (matching git blame convention).
+pub fn blame_line(file: &Path, line: usize) -> Result<BlameInfo> {
+    let file = gix::path::realpath(file).context("resolve symlinks")?;
+    let repo_dir = get_repo_dir(&file)?;
+    let repo = open_repo(repo_dir)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    let work_dir = repo
+        .workdir()
+        .context("repo has no working directory")?;
+    let rel_path = file.strip_prefix(work_dir)?;
+
+    let line_range = format!("{},{}", line, line);
+    let output = std::process::Command::new("git")
+        .args(["blame", "-L", &line_range, "--porcelain", "--"])
+        .arg(rel_path)
+        .current_dir(work_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context("failed to run git blame")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git blame failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_porcelain_blame(&stdout)
+}
+
+fn parse_porcelain_blame(output: &str) -> Result<BlameInfo> {
+    let mut commit_hash = String::new();
+    let mut author = String::new();
+    let mut author_mail = String::new();
+    let mut author_time = String::new();
+    let mut summary = String::new();
+
+    for (i, line) in output.lines().enumerate() {
+        if i == 0 {
+            // First line: <hash> <orig_line> <final_line> [<num_lines>]
+            commit_hash = line.split_whitespace().next().unwrap_or("").to_string();
+        } else if let Some(val) = line.strip_prefix("author ") {
+            author = val.to_string();
+        } else if let Some(val) = line.strip_prefix("author-mail ") {
+            author_mail = val.to_string();
+        } else if let Some(val) = line.strip_prefix("author-time ") {
+            // Convert unix timestamp to readable date
+            if let Ok(ts) = val.parse::<i64>() {
+                author_time = format_unix_timestamp(ts);
+            } else {
+                author_time = val.to_string();
+            }
+        } else if let Some(val) = line.strip_prefix("summary ") {
+            summary = val.to_string();
+        }
+    }
+
+    if commit_hash.is_empty() {
+        bail!("failed to parse git blame output");
+    }
+
+    Ok(BlameInfo {
+        commit_hash,
+        author,
+        author_mail,
+        author_time,
+        summary,
+    })
+}
+
+fn format_unix_timestamp(ts: i64) -> String {
+    // Simple date formatting without external crate
+    // Calculate date from unix timestamp
+    let secs_per_day: i64 = 86400;
+    let days = ts / secs_per_day;
+    let time_of_day = ts % secs_per_day;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+
+    // Days since epoch to date (simplified algorithm)
+    let mut y = 1970i64;
+    let mut remaining_days = days;
+
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days_in_months: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+
+    let mut m = 0usize;
+    for (i, &dim) in days_in_months.iter().enumerate() {
+        if remaining_days < dim {
+            m = i;
+            break;
+        }
+        remaining_days -= dim;
+    }
+
+    let d = remaining_days + 1;
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m + 1, d, hours, minutes)
 }

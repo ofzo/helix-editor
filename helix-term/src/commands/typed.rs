@@ -3617,6 +3617,66 @@ fn debug_step_out(
     Ok(())
 }
 
+fn git_blame(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let path = doc
+        .path()
+        .context("Buffer has no file path")?
+        .clone();
+    let cursor = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    let line_number = doc.text().char_to_line(cursor) + 1; // 1-indexed for git
+    let inner_x = view.inner_area(doc).x as usize;
+
+    let cursor_pos = cx.editor.cursor().0.unwrap_or_default();
+    let config_loader = cx.editor.syn_loader.clone();
+
+    let blame = helix_vcs::git::blame_line(&path, line_number)
+        .context("Failed to get git blame")?;
+
+    let short_hash = if blame.commit_hash.len() >= 8 {
+        &blame.commit_hash[..8]
+    } else {
+        &blame.commit_hash
+    };
+
+    let content = format!(
+        "**{}** `{}`\n\n{}\n\n`{}` — {}",
+        blame.author, short_hash, blame.summary, blame.author_mail, blame.author_time,
+    );
+
+    let popup_pos = Position {
+        row: cursor_pos.row,
+        col: inner_x,
+    };
+
+    let callback = async move {
+        let call: crate::job::Callback = crate::job::Callback::EditorCompositor(Box::new(
+            move |_editor: &mut helix_view::Editor, compositor: &mut Compositor| {
+                let markdown = ui::Markdown::new(content, config_loader);
+                let popup = Popup::new("git-blame", markdown)
+                    .position(Some(popup_pos))
+                    .position_bias(Open::Below)
+                    .auto_close(true);
+                compositor.replace_or_push("git-blame", popup);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 /// This command accepts a single boolean --skip-visible flag and no positionals.
 const BUFFER_CLOSE_OTHERS_SIGNATURE: Signature = Signature {
     positionals: (0, Some(0)),
@@ -4843,6 +4903,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Step out of the current function in the debug session.",
         fun: debug_step_out,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-blame",
+        aliases: &["blame"],
+        doc: "Show git blame info for the current line.",
+        fun: git_blame,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
