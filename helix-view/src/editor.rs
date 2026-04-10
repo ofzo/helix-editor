@@ -1519,6 +1519,12 @@ impl Editor {
         if delta_rows == 0 || from == to {
             return;
         }
+        // Skip animation for small scrolls (e.g. mouse wheel) — animate only
+        // half-page or larger jumps to avoid stutter from rapid small events
+        let abs_delta = delta_rows.unsigned_abs();
+        if abs_delta < 10 {
+            return;
+        }
         self.scroll_animations.insert(
             view_id,
             crate::view::ScrollAnimation::new(from, to, delta_rows),

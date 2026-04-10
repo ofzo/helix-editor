@@ -2103,23 +2103,20 @@ fn tutor(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyho
     Ok(())
 }
 
-fn abort_goto_line_number_preview(cx: &mut compositor::Context) {
-    if let Some(last_selection) = cx.editor.last_selection.take() {
-        let scrolloff = cx.editor.config().scrolloff;
-
-        let (view, doc) = current!(cx.editor);
-        doc.set_selection(view.id, last_selection);
-        view.ensure_cursor_in_view(doc, scrolloff);
+pub(super) fn goto_line_number(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
     }
-}
 
-fn update_goto_line_number_preview(cx: &mut compositor::Context, args: Args) -> anyhow::Result<()> {
-    cx.editor.last_selection.get_or_insert_with(|| {
-        let (view, doc) = current!(cx.editor);
-        doc.selection(view.id).clone()
-    });
+    let (view, doc) = current!(cx.editor);
+    let last_selection = doc.selection(view.id).clone();
+    let view_id = view.id;
+    let old_offset = doc.view_offset(view.id);
 
-    let scrolloff = cx.editor.config().scrolloff;
     let line = args[0].parse::<usize>()?;
     goto_line_without_jumplist(
         cx.editor,
@@ -2131,41 +2128,22 @@ fn update_goto_line_number_preview(cx: &mut compositor::Context, args: Args) -> 
         },
     );
 
+    // Center the target line in the viewport (align_view handles
+    // clamping at document start/end automatically)
     let (view, doc) = current!(cx.editor);
-    view.ensure_cursor_in_view(doc, scrolloff);
+    helix_view::align_view(doc, view, helix_view::Align::Center);
+    let new_offset = doc.view_offset(view.id);
+    view.jumps.push((doc.id(), last_selection));
 
-    Ok(())
-}
-
-pub(super) fn goto_line_number(
-    cx: &mut compositor::Context,
-    args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    match event {
-        PromptEvent::Abort => abort_goto_line_number_preview(cx),
-        PromptEvent::Validate => {
-            // If we are invoked directly via a keybinding, Validate is
-            // sent without any prior Update events. Ensure the cursor
-            // is moved to the appropriate location.
-            update_goto_line_number_preview(cx, args)?;
-
-            let last_selection = cx
-                .editor
-                .last_selection
-                .take()
-                .expect("update_goto_line_number_preview should always set last_selection");
-
-            let (view, doc) = current!(cx.editor);
-            view.jumps.push((doc.id(), last_selection));
-        }
-
-        // When a user hits backspace and there are no numbers left,
-        // we can bring them back to their original selection. If they
-        // begin typing numbers again, we'll start a new preview session.
-        PromptEvent::Update if args.is_empty() => abort_goto_line_number_preview(cx),
-        PromptEvent::Update => update_goto_line_number_preview(cx, args)?,
-    }
+    // Animate the viewport jump
+    let old_line = cx.editor.document(cx.editor.tree.get(view_id).doc)
+        .map(|d| d.text().char_to_line(old_offset.anchor))
+        .unwrap_or(0);
+    let new_line = cx.editor.document(cx.editor.tree.get(view_id).doc)
+        .map(|d| d.text().char_to_line(new_offset.anchor))
+        .unwrap_or(0);
+    let delta = new_line as isize - old_line as isize;
+    cx.editor.start_scroll_animation(view_id, old_offset, new_offset, delta);
 
     Ok(())
 }
