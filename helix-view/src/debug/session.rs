@@ -89,6 +89,8 @@ pub struct DebugSession {
     pub variables: Vec<(String, Vec<VariableNode>)>,
     /// PID of the debug adapter process for cleanup on drop.
     pub adapter_pid: Option<u32>,
+    /// TCP port the adapter is listening on (for child session connections).
+    pub adapter_port: Option<u16>,
 }
 
 impl Default for DebugSession {
@@ -110,6 +112,7 @@ impl Default for DebugSession {
             scopes: Vec::new(),
             variables: Vec::new(),
             adapter_pid: None,
+            adapter_port: None,
         }
     }
 }
@@ -245,5 +248,6 @@ impl DebugSession {
             unsafe { libc::killpg(pid as i32, libc::SIGKILL); }
         }
         self.adapter_pid = None;
+        self.adapter_port = None;
     }
 }

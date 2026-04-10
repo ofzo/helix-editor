@@ -732,7 +732,7 @@ impl Application {
                 let body = event.body.clone();
                 match event.event.as_str() {
                     "initialized" => {
-                        log::info!("DAP adapter initialized");
+                        log::debug!("DAP adapter initialized");
                         // Send configuration done
                         if let Some(client) = self.editor.debug_session.client.clone() {
                             // Send breakpoints for all files that have them
@@ -894,6 +894,52 @@ impl Application {
                     }
                     "breakpoint" => {
                         log::debug!("DAP breakpoint event: {:?}", body);
+                    }
+                    "startDebugging" => {
+                        // Multi-session adapters (js-debug-dap) send startDebugging
+                        // to ask the client to create a child debug session that
+                        // connects back to the same adapter on the same port.
+                        if let Some(body) = body {
+                            let launch_config = body.get("configuration").cloned().unwrap_or(serde_json::Value::Null);
+                            let request_type = body.get("request")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("launch")
+                                .to_string();
+
+                            log::debug!("DAP startDebugging: request={}, config={}", request_type, launch_config);
+
+                            let adapter_port = self.editor.debug_session.adapter_port;
+                            if let Some(port) = adapter_port {
+                                let addr = format!("127.0.0.1:{}", port);
+                                let name = "js-debug-child".to_string();
+                                let job = async move {
+                                    let (mut client, event_rx) = helix_dap::Client::connect_tcp(
+                                        &addr, name.clone(),
+                                    ).await.map_err(|e| anyhow::anyhow!("Child session TCP connect failed: {}", e))?;
+
+                                    client.initialize(name).await
+                                        .map_err(|e| anyhow::anyhow!("Child session initialize failed: {}", e))?;
+
+                                    let _rx = client.send_request(
+                                        if request_type == "attach" { "attach" } else { "launch" },
+                                        Some(launch_config),
+                                    ).map_err(|e| anyhow::anyhow!("Child session {} failed: {}", request_type, e))?;
+
+                                    let client = std::sync::Arc::new(client);
+                                    let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                                        move |editor: &mut Editor| {
+                                            editor.debug_session.event_rx = Some(event_rx);
+                                            editor.debug_session.client = Some(client);
+                                            editor.set_status("Debug child session connected");
+                                        },
+                                    ));
+                                    Ok(call)
+                                };
+                                self.jobs.callback(job);
+                            } else {
+                                log::warn!("DAP startDebugging: no adapter_port stored, cannot create child session");
+                            }
+                        }
                     }
                     other => {
                         log::debug!("unhandled DAP event: {}", other);

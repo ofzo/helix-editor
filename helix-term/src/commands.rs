@@ -3596,15 +3596,167 @@ fn debug_start(cx: &mut Context) {
     }
 
     let doc = doc!(cx.editor);
-    let doc_path = doc.path().cloned();
-    let working_dir = helix_stdx::env::current_working_dir();
     let debugger_config = doc.language_config().and_then(|lc| lc.debugger.clone());
     let Some(config) = debugger_config else {
         cx.editor.set_error("No debugger configured for this language");
         return;
     };
 
-    let template = config.templates.first().cloned();
+    if config.templates.is_empty() {
+        cx.editor.set_error("No debug templates configured");
+        return;
+    }
+
+    // If multiple templates, show picker; otherwise use the only one
+    if config.templates.len() > 1 {
+        let templates = config.templates.clone();
+        let columns = [ui::PickerColumn::new("Template", |t: &helix_core::syntax::config::DebugTemplate, _| {
+            t.name.clone().into()
+        })];
+        let picker = ui::Picker::new(columns, 0, templates, (), move |cx, template, _action| {
+            debug_start_with_template(cx.editor, cx.jobs, template.clone());
+        });
+        cx.push_layer(Box::new(overlaid(picker)));
+        return;
+    }
+
+    let template = config.templates.first().cloned().unwrap();
+    debug_start_with_template(cx.editor, cx.jobs, template);
+}
+
+fn debug_start_with_template(
+    editor: &mut Editor,
+    jobs: &mut crate::job::Jobs,
+    template: helix_core::syntax::config::DebugTemplate,
+) {
+    if template.completion.is_empty() {
+        // No completions needed, launch directly with defaults
+        let doc = doc!(editor);
+        let doc_path = doc.path().cloned();
+        let working_dir = helix_stdx::env::current_working_dir();
+        let defaults = collect_template_defaults(&template, doc_path.as_deref(), &working_dir);
+        let launch_args = substitute_template_args(&template.args, &defaults);
+        debug_launch_with_args(editor, jobs, template.request.clone(), launch_args);
+        return;
+    }
+
+    // Has completion items — push first prompt, chain the rest via callbacks
+    let completions = template.completion.clone();
+    let template_args = template.args.clone();
+    let request = template.request.clone();
+    let callback = Box::pin(async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                let prompt = debug_parameter_prompt(completions, template_args, request, Vec::new());
+                compositor.push(Box::new(prompt));
+            }));
+        Ok(call)
+    });
+    jobs.callback(callback);
+}
+
+/// Build a prompt for the next debug template parameter.
+/// Chains prompts recursively until all parameters are collected, then launches.
+fn debug_parameter_prompt(
+    completions: Vec<helix_core::syntax::config::DebugConfigCompletion>,
+    template_args: serde_json::Value,
+    request: String,
+    mut params: Vec<String>,
+) -> ui::Prompt {
+    use helix_core::syntax::config::DebugConfigCompletion;
+
+    let completion = completions.get(params.len()).unwrap();
+    let field_type = if let DebugConfigCompletion::Advanced { completion, .. } = completion {
+        completion.as_deref().unwrap_or("")
+    } else {
+        ""
+    };
+    let name = match completion {
+        DebugConfigCompletion::Advanced { name, .. } => name.as_str(),
+        DebugConfigCompletion::Simple(s) => s.as_str(),
+    };
+    let default_val = match completion {
+        DebugConfigCompletion::Advanced { default, .. } => {
+            default.as_deref().unwrap_or("").to_owned()
+        }
+        _ => String::new(),
+    };
+
+    let completer = match field_type {
+        "filename" => {
+            |editor: &Editor, input: &str| {
+                ui::completers::filename_with_git_ignore(editor, input, false)
+            }
+        }
+        _ => ui::completers::none,
+    };
+
+    ui::Prompt::new(
+        format!("{}: ", name).into(),
+        None,
+        completer,
+        move |cx, input: &str, event| {
+            if event != ui::PromptEvent::Validate {
+                return;
+            }
+
+            let mut value = input.to_owned();
+            if value.is_empty() {
+                value = default_val.clone();
+            }
+            params.push(value);
+
+            if params.len() < completions.len() {
+                let completions = completions.clone();
+                let template_args = template_args.clone();
+                let request = request.clone();
+                let params = params.clone();
+                let callback = Box::pin(async move {
+                    let call: crate::job::Callback =
+                        crate::job::Callback::EditorCompositor(Box::new(
+                            move |_editor, compositor| {
+                                let prompt = debug_parameter_prompt(
+                                    completions,
+                                    template_args,
+                                    request,
+                                    params,
+                                );
+                                compositor.push(Box::new(prompt));
+                            },
+                        ));
+                    Ok(call)
+                });
+                cx.jobs.callback(callback);
+            } else {
+                // All parameters collected — resolve and launch
+                let launch_args = substitute_template_args(&template_args, &params);
+                debug_launch_with_args(cx.editor, cx.jobs, request.clone(), launch_args);
+            }
+        },
+    )
+}
+
+fn debug_launch_with_args(
+    editor: &mut Editor,
+    jobs: &mut crate::job::Jobs,
+    request: String,
+    mut launch_args: serde_json::Value,
+) {
+    let doc = doc!(editor);
+    let working_dir = helix_stdx::env::current_working_dir();
+    let debugger_config = doc.language_config().and_then(|lc| lc.debugger.clone());
+    let Some(config) = debugger_config else {
+        editor.set_error("No debugger configured for this language");
+        return;
+    };
+
+    let launch_command = if request == "attach" { "attach" } else { "launch" };
+
+    // Resolve paths and force stopOnEntry
+    resolve_launch_paths(&mut launch_args, &working_dir);
+    if let serde_json::Value::Object(ref mut map) = launch_args {
+        map.insert("stopOnEntry".to_string(), serde_json::Value::Bool(true));
+    }
 
     let adapter_config = helix_dap::client::AdapterConfig {
         command: config.command.clone(),
@@ -3614,133 +3766,42 @@ fn debug_start(cx: &mut Context) {
 
     use helix_core::syntax::config::DebugAdapterTransport;
 
-    // Collect breakpoints before entering the async callback
-    let breakpoints: Vec<_> = cx
-        .editor
-        .breakpoints
-        .iter()
-        .map(|(p, bps)| (p.to_path_buf(), bps.to_vec()))
-        .collect();
-
     match config.transport {
         DebugAdapterTransport::Stdio => {
             match helix_dap::Client::start(&adapter_config, config.name.clone()) {
-                Ok((mut client, mut event_rx)) => {
-                    cx.editor.debug_session.active = true;
-                    cx.editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
-                    cx.editor.set_status("Starting debug adapter (stdio)...");
+                Ok((mut client, event_rx)) => {
+                    editor.debug_session.active = true;
+                    editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
+                    editor.debug_session.adapter_pid = client.process_id();
+                    editor.set_status("Starting debug adapter (stdio)...");
 
                     let callback = async move {
-                        macro_rules! dlog {
-                            ($($arg:tt)*) => { log::debug!($($arg)*) }
-                        }
-
                         // Step 1: Initialize
-                        let _caps = client.initialize(config.name.clone()).await
+                        client.initialize(config.name.clone()).await
                             .map_err(|e| anyhow::anyhow!("DAP initialize failed: {}", e))?;
-                        dlog!("initialize OK");
 
-                        // Step 2: Wait for the "initialized" event
-                        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-                        loop {
-                            match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                                Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
-                                    if ev.event == "initialized" =>
-                                {
-                                    dlog!("got initialized event");
-                                    break;
-                                }
-                                Ok(Some(msg)) => {
-                                    dlog!("skipping event during init: {:?}", msg);
-                                    continue;
-                                }
-                                Ok(None) => return Err(anyhow::anyhow!("DAP event stream closed before initialized")),
-                                Err(_) => return Err(anyhow::anyhow!("Timed out waiting for DAP initialized event")),
-                            }
-                        }
-
-                        // Step 3: Send launch/attach WITHOUT awaiting (adapter blocks until configurationDone)
-                        let mut launch_args = if let Some(ref tmpl) = template {
-                            let defaults = collect_template_defaults(tmpl, doc_path.as_deref(), &working_dir);
-                            substitute_template_args(&tmpl.args, &defaults)
-                        } else {
-                            serde_json::json!({})
-                        };
-                        resolve_launch_paths(&mut launch_args, &working_dir);
-                        // Force stopOnEntry so program pauses at first line
-                        if let serde_json::Value::Object(ref mut map) = launch_args {
-                            map.insert("stopOnEntry".to_string(), serde_json::Value::Bool(true));
-                        }
-                        let launch_command = template
-                            .as_ref()
-                            .filter(|t| t.request == "attach")
-                            .map(|_| "attach")
-                            .unwrap_or("launch");
-                        dlog!("sending {} command with args: {}", launch_command, launch_args);
-                        let launch_rx = client
-                            .send_request(launch_command, Some(launch_args.clone()))
+                        // Send launch/attach WITHOUT awaiting the response.
+                        // The adapter may not respond until configurationDone is sent.
+                        log::debug!("DAP stdio: sending {} with args: {}", launch_command, launch_args);
+                        let _launch_rx = client.send_request(launch_command, Some(launch_args))
                             .map_err(|e| anyhow::anyhow!("Failed to send DAP {}: {}", launch_command, e))?;
-                        dlog!("{} sent (not awaited), sending breakpoints...", launch_command);
 
-                        // Step 4: Send breakpoints
-                        dlog!("sending breakpoints for {} files", breakpoints.len());
-                        for (path, bps) in &breakpoints {
-                            let source = helix_dap::helix_dap_types::Source {
-                                path: Some(path.clone()),
-                                ..Default::default()
-                            };
-                            let source_bps: Vec<_> = bps.iter()
-                                .map(|bp| bp.to_source_breakpoint())
-                                .collect();
-                            dlog!("  setBreakpoints: {} lines: {:?}",
-                                path.display(),
-                                source_bps.iter().map(|b| b.line).collect::<Vec<_>>());
-                            match client.set_breakpoints(source, source_bps).await {
-                                Ok(resp) => {
-                                    for b in &resp.breakpoints {
-                                        dlog!("    response: verified={} line={:?} msg={:?}",
-                                            b.verified, b.line, b.message);
-                                    }
-                                }
-                                Err(e) => {
-                                    dlog!("    setBreakpoints ERROR: {}", e);
-                                }
-                            }
-                        }
-
-                        // Step 5: configurationDone
-                        dlog!("sending configurationDone");
-                        client.configuration_done().await
-                            .map_err(|e| anyhow::anyhow!("DAP configurationDone failed: {}", e))?;
-                        dlog!("configurationDone OK");
-
-                        // Step 6: Await launch response
-                        dlog!("waiting for {} response...", launch_command);
-                        let timeout = tokio::time::Duration::from_secs(30);
-                        match tokio::time::timeout(timeout, launch_rx).await {
-                            Ok(Ok(Ok(_))) => { dlog!("{} response OK", launch_command); }
-                            Ok(Ok(Err(e))) => { dlog!("{} response ERROR: {}", launch_command, e); return Err(anyhow::anyhow!("DAP {} failed: {}", launch_command, e)); }
-                            Ok(Err(_)) => { dlog!("{} channel closed", launch_command); return Err(anyhow::anyhow!("DAP {} response channel closed", launch_command)); }
-                            Err(_) => { dlog!("{} timed out", launch_command); return Err(anyhow::anyhow!("DAP {} timed out", launch_command)); }
-                        }
-                        dlog!("=== DAP session ready ===");
-
-                        let status_msg = format!("Debug connected | launch: {}", launch_args);
+                        // Step 3: Store client and event_rx into editor so the event loop
+                        // can process subsequent events (initialized, stopped, etc.)
                         let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
                             move |editor: &mut Editor| {
                                 editor.debug_session.event_rx = Some(event_rx);
-                                editor.debug_session.adapter_pid = client.process_id();
                                 editor.debug_session.client =
                                     Some(std::sync::Arc::new(client));
-                                editor.set_status(status_msg);
+                                editor.set_status("Debug adapter connected");
                             },
                         ));
                         Ok(call)
                     };
-                    cx.jobs.callback(callback);
+                    jobs.callback(callback);
                 }
                 Err(e) => {
-                    cx.editor
+                    editor
                         .set_error(format!("Failed to start debug adapter: {}", e));
                 }
             }
@@ -3752,264 +3813,49 @@ fn debug_start(cx: &mut Context) {
             let port = match std::net::TcpListener::bind("127.0.0.1:0") {
                 Ok(listener) => listener.local_addr().unwrap().port(),
                 Err(e) => {
-                    cx.editor
+                    editor
                         .set_error(format!("Failed to allocate port: {}", e));
                     return;
                 }
             };
 
-            cx.editor.debug_session.active = true;
-            cx.editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
-            cx.editor
+            editor.debug_session.active = true;
+            editor.debug_session.focus = helix_view::debug::DebugFocus::Code;
+            editor
                 .set_status(format!("Starting debug adapter (tcp:{})...", port));
 
             let callback = async move {
-                macro_rules! dlog {
-                    ($($arg:tt)*) => { log::debug!($($arg)*) }
-                }
-
-                let (mut client, mut event_rx) = helix_dap::Client::start_tcp(
+                let (mut client, event_rx) = helix_dap::Client::start_tcp(
                     &adapter_config,
                     port,
                     &port_arg,
                     config.name.clone(),
                 )
                 .await
-                .map_err(|e| { dlog!("start_tcp FAILED: {}", e); anyhow::anyhow!("Failed to start TCP debug adapter: {}", e) })?;
-                dlog!("TCP connected");
+                .map_err(|e| anyhow::anyhow!("Failed to start TCP debug adapter: {}", e))?;
 
-                // Step 1: Initialize
-                let _caps = client
-                    .initialize(config.name.clone())
-                    .await
-                    .map_err(|e| { dlog!("initialize FAILED: {}", e); anyhow::anyhow!("DAP initialize failed: {}", e) })?;
-                dlog!("initialize OK");
-
-                // Step 2: Wait for the "initialized" event (adapter sends it after initialize response)
-                let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-                loop {
-                    match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                        Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
-                            if ev.event == "initialized" =>
-                        {
-                            dlog!("got initialized event");
-                            break;
-                        }
-                        Ok(Some(msg)) => {
-                            dlog!("skipping event: {:?}", msg);
-                            continue;
-                        }
-                        Ok(None) => { dlog!("event stream closed!"); return Err(anyhow::anyhow!("DAP event stream closed before initialized")); }
-                        Err(_) => { dlog!("TIMEOUT waiting for initialized"); return Err(anyhow::anyhow!("Timed out waiting for DAP initialized event")); }
-                    }
-                }
-
-                // Step 3: Send launch/attach WITHOUT awaiting (adapter blocks until configurationDone)
-                let mut launch_args = if let Some(ref tmpl) = template {
-                    let defaults = collect_template_defaults(tmpl, doc_path.as_deref(), &working_dir);
-                    substitute_template_args(&tmpl.args, &defaults)
-                } else {
-                    serde_json::json!({})
-                };
-                resolve_launch_paths(&mut launch_args, &working_dir);
-                // Note: autoAttachChildProcesses is left at adapter default;
-                // if the adapter sends startDebugging, we handle it by creating a child session.
-                let launch_command = template
-                    .as_ref()
-                    .filter(|t| t.request == "attach")
-                    .map(|_| "attach")
-                    .unwrap_or("launch");
-                dlog!("sending {} with args: {}", launch_command, launch_args);
-                let launch_rx = client
-                    .send_request(launch_command, Some(launch_args))
-                    .map_err(|e| anyhow::anyhow!("Failed to send DAP {}: {}", launch_command, e))?;
-                dlog!("{} sent (not awaited), sending breakpoints...", launch_command);
-
-                // Step 4: Send breakpoints
-                dlog!("sending breakpoints for {} files", breakpoints.len());
-                for (path, bps) in &breakpoints {
-                    let source = helix_dap::helix_dap_types::Source {
-                        path: Some(path.clone()),
-                        ..Default::default()
-                    };
-                    let source_bps: Vec<_> = bps.iter()
-                        .map(|bp| bp.to_source_breakpoint())
-                        .collect();
-                    dlog!("  setBreakpoints: {} lines: {:?}",
-                        path.display(),
-                        source_bps.iter().map(|b| b.line).collect::<Vec<_>>());
-                    match client.set_breakpoints(source, source_bps).await {
-                        Ok(resp) => {
-                            for b in &resp.breakpoints {
-                                dlog!("    response: verified={} line={:?} msg={:?}", b.verified, b.line, b.message);
-                            }
-                        }
-                        Err(e) => {
-                            dlog!("    setBreakpoints ERROR: {}", e);
-                        }
-                    }
-                }
-
-                // Step 5: configurationDone — tells adapter program can start/resume
-                dlog!("sending configurationDone");
-                client.configuration_done().await
-                    .map_err(|e| { dlog!("configurationDone FAILED: {}", e); anyhow::anyhow!("DAP configurationDone failed: {}", e) })?;
-                dlog!("configurationDone OK");
-
-                // Step 6: Await launch response
-                dlog!("waiting for {} response...", launch_command);
-                let timeout = tokio::time::Duration::from_secs(30);
-                match tokio::time::timeout(timeout, launch_rx).await {
-                    Ok(Ok(Ok(_))) => { dlog!("{} response OK", launch_command); }
-                    Ok(Ok(Err(e))) => { dlog!("{} ERROR: {}", launch_command, e); return Err(anyhow::anyhow!("DAP {} failed: {}", launch_command, e)); }
-                    Ok(Err(_)) => { dlog!("{} channel closed", launch_command); return Err(anyhow::anyhow!("DAP {} response channel closed", launch_command)); }
-                    Err(_) => { dlog!("{} timed out", launch_command); return Err(anyhow::anyhow!("DAP {} timed out", launch_command)); }
-                }
-                dlog!("=== parent session ready, checking for startDebugging ===");
-
-                // Step 7: Check if adapter sends startDebugging (child session model)
-                // Wait briefly for the startDebugging event
-                let child_config = {
-                    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(3);
-                    let mut found = None;
-                    loop {
-                        match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                            Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
-                                if ev.event == "startDebugging" =>
-                            {
-                                dlog!("got startDebugging event: {:?}", ev.body);
-                                found = ev.body;
-                                break;
-                            }
-                            Ok(Some(msg)) => {
-                                dlog!("skipping event while waiting for startDebugging: {:?}", msg);
-                                continue;
-                            }
-                            Ok(None) => { dlog!("event stream closed while waiting for startDebugging"); break; }
-                            Err(_) => { dlog!("no startDebugging received (timeout) — single session mode"); break; }
-                        }
-                    }
-                    found
-                };
-
-                // Capture adapter PID before client may be moved
                 let adapter_pid = client.process_id();
 
-                if let Some(child_body) = child_config {
-                    // Child session model: create a new DAP connection for the child
-                    let child_cfg = child_body.get("configuration").cloned().unwrap_or_default();
-                    let child_request = child_body.get("request")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("launch")
-                        .to_string();
-                    dlog!("creating child session: request={} config={}", child_request, child_cfg);
+                client.initialize(config.name.clone()).await
+                    .map_err(|e| anyhow::anyhow!("DAP initialize failed: {}", e))?;
 
-                    // Connect to the same adapter port
-                    let (mut child_client, mut child_event_rx) = helix_dap::Client::connect_tcp(
-                        &format!("127.0.0.1:{}", port),
-                        config.name.clone(),
-                    ).await.map_err(|e| { dlog!("child connect FAILED: {}", e); anyhow::anyhow!("Child DAP connect failed: {}", e) })?;
-                    dlog!("child TCP connected");
+                log::debug!("DAP TCP: sending {} with args: {}", launch_command, launch_args);
+                let _launch_rx = client.send_request(launch_command, Some(launch_args))
+                    .map_err(|e| anyhow::anyhow!("Failed to send DAP {}: {}", launch_command, e))?;
 
-                    // Initialize child session
-                    let _child_caps = child_client.initialize(config.name.clone()).await
-                        .map_err(|e| { dlog!("child initialize FAILED: {}", e); anyhow::anyhow!("Child DAP initialize failed: {}", e) })?;
-                    dlog!("child initialize OK");
-
-                    // Wait for child's initialized event
-                    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-                    loop {
-                        match tokio::time::timeout_at(deadline, child_event_rx.recv()).await {
-                            Ok(Some(helix_dap::transport::AdapterMessage::Event(ev)))
-                                if ev.event == "initialized" =>
-                            {
-                                dlog!("child got initialized event");
-                                break;
-                            }
-                            Ok(Some(msg)) => {
-                                dlog!("child skipping event: {:?}", msg);
-                                continue;
-                            }
-                            Ok(None) => { dlog!("child event stream closed"); return Err(anyhow::anyhow!("Child event stream closed")); }
-                            Err(_) => { dlog!("child TIMEOUT waiting for initialized"); return Err(anyhow::anyhow!("Child timed out waiting for initialized")); }
-                        }
-                    }
-
-                    // Send launch/attach WITHOUT awaiting (same pattern as parent)
-                    let child_launch_cmd = if child_request == "attach" { "attach" } else { "launch" };
-                    dlog!("child sending {} with config: {}", child_launch_cmd, child_cfg);
-                    let child_launch_rx = child_client
-                        .send_request(child_launch_cmd, Some(child_cfg))
-                        .map_err(|e| anyhow::anyhow!("Child send {} failed: {}", child_launch_cmd, e))?;
-                    dlog!("child {} sent (not awaited)", child_launch_cmd);
-
-                    // Send breakpoints to child session
-                    dlog!("sending breakpoints to child for {} files", breakpoints.len());
-                    for (path, bps) in &breakpoints {
-                        let source = helix_dap::helix_dap_types::Source {
-                            path: Some(path.clone()),
-                            ..Default::default()
-                        };
-                        let source_bps: Vec<_> = bps.iter()
-                            .map(|bp| bp.to_source_breakpoint())
-                            .collect();
-                        dlog!("  child setBreakpoints: {} lines: {:?}",
-                            path.display(),
-                            source_bps.iter().map(|b| b.line).collect::<Vec<_>>());
-                        match child_client.set_breakpoints(source, source_bps).await {
-                            Ok(resp) => {
-                                for b in &resp.breakpoints {
-                                    dlog!("    child response: verified={} line={:?} msg={:?}", b.verified, b.line, b.message);
-                                }
-                            }
-                            Err(e) => { dlog!("    child setBreakpoints ERROR: {}", e); }
-                        }
-                    }
-
-                    // configurationDone on child
-                    dlog!("child sending configurationDone");
-                    child_client.configuration_done().await
-                        .map_err(|e| { dlog!("child configurationDone FAILED: {}", e); anyhow::anyhow!("Child configurationDone failed: {}", e) })?;
-                    dlog!("child configurationDone OK");
-
-                    // Await child launch response
-                    dlog!("waiting for child {} response...", child_launch_cmd);
-                    let timeout = tokio::time::Duration::from_secs(30);
-                    match tokio::time::timeout(timeout, child_launch_rx).await {
-                        Ok(Ok(Ok(_))) => { dlog!("child {} response OK", child_launch_cmd); }
-                        Ok(Ok(Err(e))) => { dlog!("child {} ERROR: {}", child_launch_cmd, e); return Err(anyhow::anyhow!("Child {} failed: {}", child_launch_cmd, e)); }
-                        Ok(Err(_)) => { dlog!("child {} channel closed", child_launch_cmd); return Err(anyhow::anyhow!("Child {} channel closed", child_launch_cmd)); }
-                        Err(_) => { dlog!("child {} timed out", child_launch_cmd); return Err(anyhow::anyhow!("Child {} timed out", child_launch_cmd)); }
-                    }
-                    dlog!("=== child DAP session ready ===");
-
-                    // Use child session as the active session
-                    let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
-                        move |editor: &mut Editor| {
-                            editor.debug_session.event_rx = Some(child_event_rx);
-                            editor.debug_session.adapter_pid = adapter_pid;
-                            editor.debug_session.client =
-                                Some(std::sync::Arc::new(child_client));
-                            editor.set_status(format!("Debug adapter connected (tcp:{}, child session)", port));
-                        },
-                    ));
-                    Ok(call)
-                } else {
-                    // Single session mode (no startDebugging)
-                    dlog!("=== DAP TCP session ready (single session) ===");
-                    let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
-                        move |editor: &mut Editor| {
-                            editor.debug_session.event_rx = Some(event_rx);
-                            editor.debug_session.adapter_pid = adapter_pid;
-                            editor.debug_session.client =
-                                Some(std::sync::Arc::new(client));
-                            editor.set_status(format!("Debug adapter connected (tcp:{})", port));
-                        },
-                    ));
-                    Ok(call)
-                }
+                let client = std::sync::Arc::new(client);
+                let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(
+                    move |editor: &mut Editor| {
+                        editor.debug_session.event_rx = Some(event_rx);
+                        editor.debug_session.adapter_pid = adapter_pid;
+                        editor.debug_session.adapter_port = Some(port);
+                        editor.debug_session.client = Some(client);
+                        editor.set_status(format!("Debug adapter connected (tcp:{})", port));
+                    },
+                ));
+                Ok(call)
             };
-            cx.jobs.callback(callback);
+            jobs.callback(callback);
         }
     }
 }
