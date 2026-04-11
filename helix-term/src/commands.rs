@@ -1994,30 +1994,68 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
             let mut early_return = false;
             match direction {
                 Forward => {
-                    let off;
-                    (head, off) = char_idx_at_visual_offset(
-                        doc_text,
-                        view_offset.anchor,
-                        (view_offset.vertical_offset + scrolloff) as isize,
-                        0,
-                        &text_fmt,
-                        &annotations,
-                    );
-                    head += (off != 0) as usize;
+                    if !doc.folded_lines.is_empty() {
+                        // Walk forward from anchor counting visible lines
+                        let anchor_line = doc_text.char_to_line(
+                            view_offset.anchor.min(doc_text.len_chars()),
+                        );
+                        let total_lines = doc_text.len_lines();
+                        let target = view_offset.vertical_offset + scrolloff;
+                        let mut visible = 0usize;
+                        let mut line = anchor_line;
+                        while visible < target && line + 1 < total_lines {
+                            line += 1;
+                            if doc.is_line_visible(line) {
+                                visible += 1;
+                            }
+                        }
+                        head = doc_text.line_to_char(line);
+                    } else {
+                        let off;
+                        (head, off) = char_idx_at_visual_offset(
+                            doc_text,
+                            view_offset.anchor,
+                            (view_offset.vertical_offset + scrolloff) as isize,
+                            0,
+                            &text_fmt,
+                            &annotations,
+                        );
+                        head += (off != 0) as usize;
+                    }
                     if head <= cursor {
                         early_return = true;
                     }
                 }
                 Backward => {
-                    head = char_idx_at_visual_offset(
-                        doc_text,
-                        view_offset.anchor,
-                        (view_offset.vertical_offset + height - scrolloff - 1) as isize,
-                        0,
-                        &text_fmt,
-                        &annotations,
-                    )
-                    .0;
+                    if !doc.folded_lines.is_empty() {
+                        // Walk forward from anchor counting visible lines
+                        let anchor_line = doc_text.char_to_line(
+                            view_offset.anchor.min(doc_text.len_chars()),
+                        );
+                        let total_lines = doc_text.len_lines();
+                        let target = view_offset.vertical_offset + height
+                            - scrolloff - 1;
+                        let mut visible = 0usize;
+                        let mut line = anchor_line;
+                        while visible < target && line + 1 < total_lines {
+                            line += 1;
+                            if doc.is_line_visible(line) {
+                                visible += 1;
+                            }
+                        }
+                        head = doc_text.line_to_char(line);
+                    } else {
+                        head = char_idx_at_visual_offset(
+                            doc_text,
+                            view_offset.anchor,
+                            (view_offset.vertical_offset + height - scrolloff - 1)
+                                as isize,
+                            0,
+                            &text_fmt,
+                            &annotations,
+                        )
+                        .0;
+                    }
                     if head >= cursor {
                         early_return = true;
                     }
