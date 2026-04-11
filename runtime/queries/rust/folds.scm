@@ -35,6 +35,27 @@
   (field_initializer_list)
 ] @fold
 
+; Method call chains (2+ chained calls)
+; simple: foo.bar().baz()
+(call_expression
+  function: (field_expression
+    value: (call_expression))) @fold
+; generic: foo.bar().collect::<Vec<_>>()
+(call_expression
+  function: (generic_function
+    function: (field_expression
+      value: (call_expression)))) @fold
+; with try: foo.bar()?.baz()
+(call_expression
+  function: (field_expression
+    value: (try_expression
+      (call_expression)))) @fold
+; with await: foo.bar().await.baz()
+(call_expression
+  function: (field_expression
+    value: (await_expression
+      (call_expression)))) @fold
+
 ; Other
 [
   (macro_invocation)
