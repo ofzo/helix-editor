@@ -160,7 +160,9 @@ impl Application {
             if let Some((_first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
                 if let Some(editor_view) = compositor.find::<ui::EditorView>() {
                     match ui::Explorer::from_editor(&editor) {
-                        Ok(explore) => editor_view.explorer = Some(explore),
+                        Ok(explore) => {
+                            editor_view.explorer = Some(explore);
+                        }
                         Err(err) => editor.set_error(format!("{}", err)),
                     }
                 }

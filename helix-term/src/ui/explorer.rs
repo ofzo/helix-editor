@@ -221,9 +221,10 @@ impl Explorer {
         let current_root = std::env::current_dir()
             .unwrap_or_else(|_| "./".into())
             .canonicalize()?;
+        let tree = Self::new_tree_view(current_root.clone())?;
         let mut explorer = Self {
-            tree: Self::new_tree_view(current_root.clone())?,
-                    show_help: true,
+            tree,
+            show_help: true,
             state: State::new(true, current_root),
             prompt: None,
             on_next_key: None,
@@ -603,6 +604,7 @@ impl Explorer {
         surface: &mut Surface,
         cx: &mut Context,
     ) {
+        self.tree.ensure_root_opened();
         self.drain_git_status();
         let clipboard_info = self.clipboard.as_ref().map(|cb| {
             let label = match cb.op {

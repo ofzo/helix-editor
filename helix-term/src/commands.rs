@@ -3297,7 +3297,12 @@ fn open_or_focus_explorer(cx: &mut Context) {
                     Some(explore) if explore.is_open() => explore.close(),
                     Some(explore) => explore.focus(),
                     None => match ui::Explorer::new(cx) {
-                        Ok(explore) => editor.explorer = Some(explore),
+                        Ok(explore) => {
+                            editor.explorer = Some(explore);
+                            if let Some(explorer) = editor.explorer.as_mut() {
+                                let _ = explorer.reveal_current_file(cx);
+                            }
+                        }
                         Err(err) => cx.editor.set_error(format!("{}", err)),
                     },
                 }

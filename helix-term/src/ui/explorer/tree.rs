@@ -322,10 +322,8 @@ pub struct TreeView<T: TreeViewItem> {
 impl<T: TreeViewItem> TreeView<T> {
     pub fn build_tree(root: T) -> Result<Self> {
         let params = T::Params::default();
-        let children = root.get_children(&params)?;
-        let items = vec_to_tree(children);
         Ok(Self {
-            tree: Tree::new(root, items),
+            tree: Tree::new(root, vec![]),
             selected: 0,
             backward_jumps: vec![],
             forward_jumps: vec![],
@@ -345,12 +343,28 @@ impl<T: TreeViewItem> TreeView<T> {
         })
     }
 
+    /// Expand the root node if it hasn't been opened yet (lazy init).
+    pub fn ensure_root_opened(&mut self) {
+        if !self.tree.is_opened {
+            let _ = self.tree.open(&self.params);
+            self.regenerate_index();
+        }
+    }
+
     pub fn set_params(&mut self, params: T::Params) {
         self.params = params;
     }
 
     pub fn refresh(&mut self) -> Result<()> {
+        let current_path = self.current().ok().map(|t| t.item.path());
         self.tree.refresh(&self.params)?;
+        self.regenerate_index();
+        if let Some(path) = current_path {
+            if let Some(index) = self.tree.find(0, Direction::Forward, |t| t.item.path() == path) {
+                self.set_selected(index);
+                return Ok(());
+            }
+        }
         self.set_selected(self.selected);
         Ok(())
     }
@@ -386,6 +400,10 @@ impl<T: TreeViewItem> TreeView<T> {
     ///    vec!["helix-term", "src", "ui", "tree.rs"]
     ///
     pub fn reveal_item(&mut self, segments: Vec<String>) -> Result<()> {
+        // Ensure the root node is expanded before traversing
+        if !self.tree.is_opened {
+            self.tree.open(&self.params)?;
+        }
         // Expand the tree
         let root = self.tree.item.path().display().to_string();
         let params = &self.params;

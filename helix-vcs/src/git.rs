@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use arc_swap::ArcSwap;
 use gix::filter::plumbing::driver::apply::Delay;
 use gix::path::env;
+use std::cell::RefCell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -135,6 +136,29 @@ fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
     Ok(res)
 }
 
+thread_local! {
+    /// Caches (work_dir, git_dir) to skip repeated git discovery for paths
+    /// within the same repository.
+    static REPO_CACHE: RefCell<Option<(PathBuf, PathBuf)>> = RefCell::new(None);
+}
+
+/// Open a git repo, using a cached `.git` dir path when the requested path
+/// falls under a previously discovered work tree. Avoids the expensive
+/// upward directory walk on repeated calls within the same repo.
+fn open_repo_cached(path: &Path) -> Result<ThreadSafeRepository> {
+    let cached = REPO_CACHE.with(|c| c.borrow().clone());
+    if let Some((work_dir, git_dir)) = cached {
+        if path.starts_with(&work_dir) {
+            return ThreadSafeRepository::open(&git_dir).map_err(Into::into);
+        }
+    }
+    let repo = open_repo(path)?;
+    let work_dir = repo.work_dir().unwrap_or(Path::new("/")).to_path_buf();
+    let git_dir = repo.git_dir().to_path_buf();
+    REPO_CACHE.with(|c| *c.borrow_mut() = Some((work_dir, git_dir)));
+    Ok(repo)
+}
+
 pub fn get_repo_root_dir(file: &Path) -> Result<Arc<PathBuf>> {
     debug_assert!(!file.exists() || file.is_file());
     debug_assert!(file.is_absolute());
@@ -254,7 +278,7 @@ pub fn is_ignored(path: &Path) -> bool {
 
 /// Batch check if paths are ignored by gitignore rules.
 /// Returns a `Vec<bool>` aligned with the input paths.
-/// Uses a single `git check-ignore` subprocess for all paths.
+/// Uses gix native excludes API (no subprocess).
 pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
     if paths.is_empty() {
         return vec![];
@@ -265,7 +289,7 @@ pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
         None => return vec![false; paths.len()],
     };
 
-    let Ok(repo) = open_repo(base) else {
+    let Ok(repo) = open_repo_cached(base) else {
         return vec![false; paths.len()];
     };
 
@@ -274,39 +298,27 @@ pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
         return vec![false; paths.len()];
     };
 
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["check-ignore", "--stdin", "-z"])
-        .current_dir(work_dir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(index) = repo.index() else {
         return vec![false; paths.len()];
     };
 
-    if let Some(stdin) = child.stdin.take() {
-        use std::io::Write;
-        let mut writer = std::io::BufWriter::new(stdin);
-        for path in paths {
-            let _ = write!(writer, "{}\0", path.display());
-        }
-    }
-
-    let Ok(output) = child.wait_with_output() else {
+    let Ok(mut excludes) = repo.excludes(
+        &index,
+        None,
+        gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+    ) else {
         return vec![false; paths.len()];
     };
-
-    let ignored_set: std::collections::HashSet<&std::ffi::OsStr> = output
-        .stdout
-        .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(|s| std::ffi::OsStr::new(std::str::from_utf8(s).unwrap_or("")))
-        .collect();
 
     paths
         .iter()
-        .map(|p| ignored_set.contains(p.as_os_str()))
+        .map(|p| {
+            p.strip_prefix(work_dir)
+                .ok()
+                .and_then(|rel| excludes.at_path(rel, None).ok())
+                .map(|platform| platform.is_excluded())
+                .unwrap_or(false)
+        })
         .collect()
 }
 
