@@ -175,13 +175,7 @@ where
         Mode::Select => &modenames.select,
         Mode::Normal => &modenames.normal,
     };
-    let content = if visible {
-        format!(" {mode_str} ")
-    } else {
-        // If not focused, explicitly leave an empty space instead of returning None.
-        " ".repeat(mode_str.width() + 2)
-    };
-    let style = if visible && config.color_modes {
+    let mode_style = if visible && config.color_modes {
         match context.editor.mode() {
             Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
             Mode::Select => context.editor.theme.get("ui.statusline.select"),
@@ -190,7 +184,25 @@ where
     } else {
         Style::default()
     };
-    write(context, Span::styled(content, style));
+
+    if visible && config.color_modes {
+        let base_style = context.editor.theme.get("ui.statusline");
+        let cap_style = Style::default()
+            .fg(mode_style.bg.unwrap_or(helix_view::graphics::Color::Reset))
+            .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
+        // Powerline left half-circle + mode text + right half-circle
+        write(context, Span::styled("\u{E0B6}", cap_style));
+        write(context, Span::styled(format!(" {mode_str} "), mode_style));
+        write(context, Span::styled("\u{E0B4}", cap_style));
+    } else {
+        let content = if visible {
+            format!(" {mode_str} ")
+        } else {
+            // If not focused, explicitly leave an empty space instead of returning None.
+            " ".repeat(mode_str.width() + 2)
+        };
+        write(context, Span::styled(content, mode_style));
+    }
 }
 
 // TODO think about handling multiple language servers

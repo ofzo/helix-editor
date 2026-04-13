@@ -631,7 +631,7 @@ impl Explorer {
 
         self.state.area_width = area.width;
 
-        let commandline = 1;
+        let commandline = 0;
         let side_area = match position {
             ExplorerPosition::Left => Rect { width, ..area },
             ExplorerPosition::Right => Rect {
@@ -661,11 +661,7 @@ impl Explorer {
         self.render_tree(list_area, prompt_area, surface, cx);
 
         if self.is_focus() && self.show_help {
-            let help_area = match position {
-                ExplorerPosition::Left => area,
-                ExplorerPosition::Right => area.clip_right(list_area.width.saturating_add(2)),
-            };
-            self.render_help(help_area, surface, cx);
+            cx.editor.autoinfo = Some(Self::help_info());
         }
 
         if let Some((_, prompt)) = self.prompt.as_mut() {
@@ -673,7 +669,7 @@ impl Explorer {
         }
     }
 
-    fn render_help(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+    fn help_info() -> Info {
         Info::new(
             "Explorer",
             &[
@@ -700,7 +696,6 @@ impl Explorer {
                 ("?", "Toggle help"),
             ],
         )
-        .render(area, surface, cx)
     }
 
     fn handle_prompt_event(&mut self, event: &KeyEvent, cx: &mut Context) -> EventResult {

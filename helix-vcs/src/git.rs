@@ -84,7 +84,28 @@ pub fn get_current_head_name(file: &Path) -> Result<Arc<ArcSwap<Box<str>>>> {
 
     let name = match head_ref {
         Some(reference) => reference.name().shorten().to_string(),
-        None => head_commit.id.to_hex_with_len(8).to_string(),
+        None => {
+            // Detached HEAD: try to find a tag pointing to this commit
+            let head_id = head_commit.id;
+            let tag_name = repo
+                .references()
+                .ok()
+                .and_then(|refs| {
+                    refs.tags()
+                        .ok()
+                        .and_then(|tags| {
+                            tags.filter_map(Result::ok)
+                                .find(|r| {
+                                    r.clone()
+                                        .into_fully_peeled_id()
+                                        .ok()
+                                        .map_or(false, |id| id == head_id)
+                                })
+                                .map(|r| format!("#{}", r.name().shorten()))
+                        })
+                });
+            tag_name.unwrap_or_else(|| head_id.to_hex_with_len(8).to_string())
+        }
     };
 
     Ok(Arc::new(ArcSwap::from_pointee(name.into_boxed_str())))

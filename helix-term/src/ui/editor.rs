@@ -862,17 +862,8 @@ impl EditorView {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
 
-        if editor.status_msg.is_none() {
-            let statusline_area = view
-                .area
-                .clip_top(view.area.height.saturating_sub(1))
-                .clip_bottom(1); // -1 from bottom to remove commandline
-
-            let mut context =
-                statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
-
-            statusline::render(&mut context, statusline_area, surface);
-        }
+        // Statusline is rendered globally (full-width) in EditorView::render()
+        // showing focused buffer info only.
     }
 
     pub fn render_rulers(
@@ -2439,7 +2430,7 @@ impl Component for EditorView {
         surface.set_style(area, cx.editor.theme.get("ui.background"));
         let config = cx.editor.config();
 
-        let editor_area = area.clip_bottom(1);
+        let editor_area = area.clip_bottom(2); // 1 for command line + 1 for global statusline
 
         // check if bufferline should be rendered
         use helix_view::editor::BufferLine;
@@ -2499,12 +2490,12 @@ impl Component for EditorView {
         if let Some(explorer) = self.explorer.as_mut() {
             if !explorer.is_focus() {
                 explorer.sync_with_current_doc(cx.editor);
-                let area = if use_bufferline {
-                    area.clip_top(1)
+                let explorer_area = if use_bufferline {
+                    area.clip_top(1).clip_bottom(2)
                 } else {
-                    area
+                    area.clip_bottom(2)
                 };
-                explorer.render(area, surface, cx);
+                explorer.render(explorer_area, surface, cx);
             }
         }
 
@@ -2531,6 +2522,22 @@ impl Component for EditorView {
                 info.render(area, surface, cx);
                 cx.editor.autoinfo = Some(info)
             }
+        }
+
+        // Render a full-width statusline just above the command line
+        {
+            let (view, _) = cx.editor.tree.views().find(|(_, f)| *f).unwrap();
+            let doc = cx.editor.document(view.doc).unwrap();
+            let statusline_area = Rect::new(
+                area.x,
+                area.y + area.height.saturating_sub(2),
+                area.width,
+                1,
+            );
+
+            let mut context =
+                statusline::RenderContext::new(cx.editor, doc, view, true, &self.spinners);
+            statusline::render(&mut context, statusline_area, surface);
         }
 
         let key_width = 15u16; // for showing pending keys
@@ -2617,12 +2624,12 @@ impl Component for EditorView {
 
         if let Some(explore) = self.explorer.as_mut() {
             if explore.is_focus() {
-                let area = if use_bufferline {
-                    area.clip_top(1)
+                let explorer_area = if use_bufferline {
+                    area.clip_top(1).clip_bottom(2)
                 } else {
-                    area
+                    area.clip_bottom(2)
                 };
-                explore.render(area, surface, cx);
+                explore.render(explorer_area, surface, cx);
             }
         }
     }
