@@ -1290,6 +1290,10 @@ pub struct Editor {
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
 
+    /// Set by modal dialog callbacks (e.g. delete/rename/create) to signal
+    /// that the explorer tree should refresh on the next render cycle.
+    pub explorer_needs_refresh: bool,
+
     /// Debug session state (active session, connection, threads, stack frames).
     pub debug_session: crate::debug::DebugSession,
     /// Breakpoints stored per file path.
@@ -1428,6 +1432,7 @@ impl Editor {
             needs_redraw: false,
             handlers,
             mouse_down_range: None,
+            explorer_needs_refresh: false,
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             debug_session: crate::debug::DebugSession::default(),

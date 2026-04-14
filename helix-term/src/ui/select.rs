@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use helix_view::{graphics::Rect, Editor};
 use tui::{
     buffer::Buffer as Surface,
@@ -18,11 +16,11 @@ pub struct Select<T: Item> {
 impl<T: Item> Select<T> {
     pub fn new<M, I, F>(message: M, options: I, data: T::Data, callback: F) -> Self
     where
-        M: Into<Cow<'static, str>>,
+        M: Into<tui::text::Text<'static>>,
         I: IntoIterator<Item = T>,
         F: Fn(&mut Editor, &T, PromptEvent) + 'static,
     {
-        let message = tui::text::Text::from(message.into()).into();
+        let message: Text = message.into().into();
         let options: Vec<_> = options.into_iter().collect();
         assert!(!options.is_empty());
         let mut menu = Menu::new(options, data, move |editor, option, event| {
@@ -69,14 +67,20 @@ impl<T: Item> Component for Select<T> {
         // Limit the text width to 80% of the screen or 80 columns, whichever is
         // smaller.
         let max_width = 80.min(((area.width as u32) * 80u32 / 100) as u16);
-        let (message_width, message_height) =
+        // Enforce a minimum content width so short messages don't look cramped.
+        const MIN_CONTENT_WIDTH: u16 = 50;
+        let (message_width, _) =
             super::text::required_size(&self.message.contents, max_width);
+        let content_width = message_width.max(MIN_CONTENT_WIDTH).min(max_width);
+        // Recompute height with actual content width for correct wrapping
+        let (_, message_height) =
+            super::text::required_size(&self.message.contents, content_width);
         let (_, menu_height) = self
             .options
-            .required_size((max_width, area.height))
+            .required_size((content_width, area.height))
             .unwrap();
         // + 2 for borders and another + 2 for horizontal padding
-        let width = message_width + 4;
+        let width = content_width + 4;
         let height = message_height + 2 + menu_height;
         let area = Rect {
             x: (area.width / 2) - width / 2,

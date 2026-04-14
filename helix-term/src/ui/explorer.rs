@@ -2,6 +2,7 @@ use super::Prompt;
 use crate::{
     compositor::{Component, Context, EventResult},
     ctrl, key, shift, ui,
+    ui::PromptEvent,
 };
 use anyhow::{bail, ensure, Result};
 use helix_core::Position;
@@ -18,6 +19,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+
 use std::borrow::Cow;
 use tree::{TreeOp, TreeView, TreeViewItem};
 use tui::{
@@ -163,14 +165,6 @@ impl TreeViewItem for FileInfo {
 }
 
 
-#[derive(Clone, Debug)]
-enum PromptAction {
-    CreateFileOrFolder,
-    RemoveFolder,
-    RemoveFile,
-    RenameFile,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClipboardOp {
     Cut,
@@ -210,7 +204,6 @@ pub struct Explorer {
     tree: TreeView<FileInfo>,
     show_help: bool,
     state: State,
-    prompt: Option<(PromptAction, Prompt)>,
     #[allow(clippy::type_complexity)]
     on_next_key: Option<Box<dyn FnMut(&mut Context, &mut Self, &KeyEvent) -> EventResult>>,
     column_width: u16,
@@ -218,6 +211,7 @@ pub struct Explorer {
     git_status: HashMap<PathBuf, FileChangeStatus>,
     git_status_rx: Option<Receiver<(PathBuf, FileChangeStatus)>>,
     clipboard: Option<ExplorerClipboard>,
+    pending_select: Option<Box<dyn Component>>,
 }
 
 impl Explorer {
@@ -234,13 +228,13 @@ impl Explorer {
             tree,
             show_help: true,
             state: State::new(true, current_root),
-            prompt: None,
             on_next_key: None,
             column_width: editor.config().explorer.column_width as u16,
             show_ignored: false,
             git_status: HashMap::new(),
             git_status_rx: None,
             clipboard: None,
+            pending_select: None,
         };
         explorer.refresh_git_status(editor);
         Ok(explorer)
@@ -375,20 +369,62 @@ impl Explorer {
 
     fn new_create_file_or_folder_prompt(&mut self, cx: &mut Context) -> Result<()> {
         let folder_path = self.nearest_folder()?;
-        self.prompt = Some((
-            PromptAction::CreateFileOrFolder,
-            Prompt::new(
-                format!(
-                    " New file or folder (ends with '{}'): ",
-                    std::path::MAIN_SEPARATOR
-                )
-                .into(),
-                None,
-                ui::completers::none,
-                |_, _, _| {},
-            )
-            .with_line(format!("{}/", folder_path.to_string_lossy()), cx.editor),
-        ));
+        let root = self.state.current_root.clone();
+        let title = format!(
+            "New file or folder (ends with '{}'):",
+            std::path::MAIN_SEPARATOR
+        );
+        // Pre-fill only the relative path within the workspace
+        let rel_folder = folder_path
+            .strip_prefix(&root)
+            .unwrap_or(&folder_path);
+        let initial = if rel_folder == Path::new("") {
+            String::new()
+        } else {
+            format!("{}/", rel_folder.display())
+        };
+        let prompt = Prompt::new(
+            "".into(),
+            None,
+            ui::completers::none,
+            move |cx, line, event| {
+                if event != PromptEvent::Validate {
+                    return;
+                }
+                // Resolve relative to workspace root
+                let path = helix_stdx::path::normalize(root.join(line));
+                // Ensure the path stays within the workspace
+                if !path.starts_with(&root) {
+                    cx.editor
+                        .set_error("Cannot create files outside the workspace");
+                    return;
+                }
+                let result = if line.ends_with(std::path::MAIN_SEPARATOR) {
+                    std::fs::create_dir_all(&path).map(|_| path.clone())
+                } else {
+                    if let Some(parent) = path.parent() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            cx.editor.set_error(format!("Failed to create: {}", e));
+                            return;
+                        }
+                    }
+                    std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&path)
+                        .map(|_| path.clone())
+                };
+                match result {
+                    Ok(p) => {
+                        cx.editor.set_status(format!("Created '{}'", p.display()));
+                        cx.editor.explorer_needs_refresh = true;
+                    }
+                    Err(e) => cx.editor.set_error(format!("Failed to create: {}", e)),
+                }
+            },
+        )
+        .with_line(initial, cx.editor);
+        self.pending_select = Some(Box::new(ui::InputDialog::new(title, prompt)));
         Ok(())
     }
 
@@ -467,20 +503,62 @@ impl Explorer {
     }
 
     fn new_rename_prompt(&mut self, cx: &mut Context) -> Result<()> {
-        let path = self.tree.current_item()?.path.clone();
-        let rel_path = path
-            .strip_prefix(&self.state.current_root)
-            .unwrap_or(&path);
-        self.prompt = Some((
-            PromptAction::RenameFile,
-            Prompt::new(
-                " Rename to ".into(),
-                None,
-                ui::completers::none,
-                |_, _, _| {},
-            )
-            .with_line(rel_path.to_string_lossy().to_string(), cx.editor),
-        ));
+        let item = self.tree.current_item()?;
+        let path = item.path.clone();
+        let rel = self.relative_display_path(&path);
+        let root = self.state.current_root.clone();
+        let title = "Rename";
+        let old_path = path.clone();
+        let prompt = Prompt::new(
+            "".into(),
+            None,
+            ui::completers::none,
+            move |cx, line, event| {
+                if event != PromptEvent::Validate {
+                    return;
+                }
+                let rel_path = PathBuf::from(line);
+                if !rel_path.is_relative() {
+                    cx.editor.set_error("Path must be relative to the working directory");
+                    return;
+                }
+                let new_path = root.join(&rel_path);
+                let new_path = helix_stdx::path::normalize(new_path);
+                if !new_path.starts_with(&root) {
+                    cx.editor.set_error("Cannot rename outside the working directory");
+                    return;
+                }
+                // Close documents at the old path
+                let ids: Vec<_> = cx.editor.documents.iter()
+                    .filter_map(|(id, doc)| {
+                        doc.path().filter(|p| p.starts_with(&old_path)).map(|_| *id)
+                    })
+                    .collect();
+                for id in ids {
+                    let _ = cx.editor.close_document(id, true);
+                }
+                // Create parent directories if needed
+                if let Some(parent) = new_path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        cx.editor.set_error(format!("Failed to rename: {}", e));
+                        return;
+                    }
+                }
+                match std::fs::rename(&old_path, &new_path) {
+                    Ok(()) => {
+                        cx.editor.set_status(format!(
+                            "Renamed '{}' -> '{}'",
+                            old_path.display(),
+                            new_path.display()
+                        ));
+                        cx.editor.explorer_needs_refresh = true;
+                    }
+                    Err(e) => cx.editor.set_error(format!("Failed to rename: {}", e)),
+                }
+            },
+        )
+        .with_line(rel, cx.editor);
+        self.pending_select = Some(Box::new(ui::InputDialog::new(title, prompt)));
         Ok(())
     }
 
@@ -491,15 +569,9 @@ impl Explorer {
             "The path '{}' is not a file",
             item.path.to_string_lossy()
         );
-        self.prompt = Some((
-            PromptAction::RemoveFile,
-            Prompt::new(
-                format!(" Delete file: '{}'? y/N: ", item.path.display()).into(),
-                None,
-                ui::completers::none,
-                |_, _, _| {},
-            ),
-        ));
+        let path = item.path.clone();
+        let rel = self.relative_display_path(&path);
+        self.pending_select = Some(Box::new(Self::make_delete_confirm("Delete", &rel, path)));
         Ok(())
     }
 
@@ -510,17 +582,56 @@ impl Explorer {
             "The path '{}' is not a folder",
             item.path.to_string_lossy()
         );
-
-        self.prompt = Some((
-            PromptAction::RemoveFolder,
-            Prompt::new(
-                format!(" Delete folder: '{}'? y/N: ", item.path.display()).into(),
-                None,
-                ui::completers::none,
-                |_, _, _| {},
-            ),
-        ));
+        let path = item.path.clone();
+        let rel = self.relative_display_path(&path);
+        self.pending_select = Some(Box::new(Self::make_delete_confirm("Delete", &rel, path)));
         Ok(())
+    }
+
+    fn relative_display_path(&self, path: &Path) -> String {
+        path.strip_prefix(&self.state.current_root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+
+    fn make_delete_confirm(title: &str, rel_path: &str, path: PathBuf) -> ui::ConfirmDialog {
+        ui::ConfirmDialog::new(title, rel_path, move |cx: &mut Context| {
+            let item_path = path.clone();
+            let ids: Vec<_> = cx
+                .editor
+                .documents
+                .iter()
+                .filter_map(|(id, doc)| {
+                    doc.path()
+                        .filter(|p| p.starts_with(&item_path))
+                        .map(|_| *id)
+                })
+                .collect();
+            for id in ids {
+                cx.editor.close_document(id, true).ok();
+            }
+
+            let result = if item_path.is_dir() {
+                std::fs::remove_dir_all(&item_path)
+            } else {
+                std::fs::remove_file(&item_path)
+            };
+            match result {
+                Ok(()) => {
+                    cx.editor.set_status(format!(
+                        "Deleted '{}'",
+                        item_path.display()
+                    ));
+                    cx.editor.explorer_needs_refresh = true;
+                }
+                Err(err) => cx.editor.set_error(format!(
+                    "Failed to delete '{}': {}",
+                    item_path.display(),
+                    err
+                )),
+            }
+        })
     }
 
     fn toggle_current(item: &mut FileInfo, cx: &mut Context, state: &mut State) -> TreeOp {
@@ -613,6 +724,17 @@ impl Explorer {
         cx: &mut Context,
     ) {
         self.tree.ensure_root_opened();
+        // Refresh tree if signaled by a modal dialog callback (delete/rename/create)
+        if cx.editor.explorer_needs_refresh {
+            cx.editor.explorer_needs_refresh = false;
+            let _ = self.tree.refresh();
+        }
+        // Also refresh if the current item was deleted externally
+        if let Ok(item) = self.tree.current_item() {
+            if !item.path.exists() {
+                let _ = self.tree.refresh();
+            }
+        }
         self.drain_git_status();
         let clipboard_info = self.clipboard.as_ref().map(|cb| {
             let label = match cb.op {
@@ -655,7 +777,9 @@ impl Explorer {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(side_area, background);
 
-        let prompt_area = area.clip_top(area.height - 1);
+        // Prompt should render in the command line (bottom of terminal),
+        // which is 2 rows below the clipped area (statusline + commandline).
+        let prompt_area = Rect::new(area.x, area.y + area.height + 1, area.width, 1);
 
         let split_style = cx.editor.theme.get("ui.window");
         let border = match position {
@@ -670,10 +794,6 @@ impl Explorer {
 
         if self.is_focus() && self.show_help {
             cx.editor.autoinfo = Some(Self::help_info());
-        }
-
-        if let Some((_, prompt)) = self.prompt.as_mut() {
-            prompt.render_prompt(prompt_area, surface, cx)
         }
     }
 
@@ -706,73 +826,6 @@ impl Explorer {
         )
     }
 
-    fn handle_prompt_event(&mut self, event: &KeyEvent, cx: &mut Context) -> EventResult {
-        let result = (|| -> Result<EventResult> {
-            let (action, mut prompt) = match self.prompt.take() {
-                Some((action, p)) => (action, p),
-                _ => return Ok(EventResult::Ignored(None)),
-            };
-            let line = prompt.line();
-
-            let current_item_path = self.tree.current_item()?.path.clone();
-            match (&action, event) {
-                (PromptAction::CreateFileOrFolder, key!(Enter)) => {
-                    if line.ends_with(std::path::MAIN_SEPARATOR) {
-                        self.new_folder(line)?
-                    } else {
-                        self.new_file(line)?
-                    }
-                }
-                (PromptAction::RemoveFolder, key) => {
-                    if let key!('y') = key {
-                        close_documents(current_item_path, cx)?;
-                        self.remove_folder()?;
-                    }
-                }
-                (PromptAction::RemoveFile, key) => {
-                    if let key!('y') = key {
-                        close_documents(current_item_path, cx)?;
-                        self.remove_file()?;
-                    }
-                }
-                (PromptAction::RenameFile, key!(Enter)) => {
-                    close_documents(current_item_path, cx)?;
-                    self.rename_current(line)?;
-                }
-                (_, key!(Esc) | ctrl!('c')) => {}
-                _ => {
-                    prompt.handle_event(&Event::Key(*event), cx);
-                    self.prompt = Some((action, prompt));
-                }
-            }
-            Ok(EventResult::Consumed(None))
-        })();
-        match result {
-            Ok(event_result) => event_result,
-            Err(err) => {
-                cx.editor.set_error(err.to_string());
-                EventResult::Consumed(None)
-            }
-        }
-    }
-
-    fn new_file(&mut self, path: &str) -> Result<()> {
-        let path = helix_stdx::path::normalize(PathBuf::from(path));
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut fd = std::fs::OpenOptions::new();
-        fd.create_new(true).write(true).open(&path)?;
-        self.tree.refresh()?;
-        self.reveal_file(path)
-    }
-
-    fn new_folder(&mut self, path: &str) -> Result<()> {
-        let path = helix_stdx::path::normalize(PathBuf::from(path));
-        std::fs::create_dir_all(&path)?;
-        self.tree.refresh()?;
-        self.reveal_file(path)
-    }
 
     fn toggle_help(&mut self) {
         self.show_help = !self.show_help
@@ -810,38 +863,6 @@ impl Explorer {
         self.column_width = self.column_width.saturating_sub(1)
     }
 
-    fn rename_current(&mut self, line: &String) -> Result<()> {
-        let item = self.tree.current_item()?;
-        let rel_path = PathBuf::from(line);
-        ensure!(
-            rel_path.is_relative(),
-            "Path must be relative to the working directory"
-        );
-        let path = self.state.current_root.join(&rel_path);
-        let path = helix_stdx::path::normalize(path);
-        ensure!(
-            path.starts_with(&self.state.current_root),
-            "Cannot rename outside the working directory"
-        );
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(&item.path, &path)?;
-        self.tree.refresh()?;
-        self.reveal_file(path)
-    }
-
-    fn remove_folder(&mut self) -> Result<()> {
-        let item = self.tree.current_item()?;
-        std::fs::remove_dir_all(&item.path)?;
-        self.tree.refresh()
-    }
-
-    fn remove_file(&mut self) -> Result<()> {
-        let item = self.tree.current_item()?;
-        std::fs::remove_file(&item.path)?;
-        self.tree.refresh()
-    }
 }
 
 fn close_documents(current_item_path: PathBuf, cx: &mut Context) -> Result<()> {
@@ -943,10 +964,6 @@ impl Component for Explorer {
             return on_next_key(cx, self, key_event);
         }
 
-        if let EventResult::Consumed(c) = self.handle_prompt_event(key_event, cx) {
-            return EventResult::Consumed(c);
-        }
-
         if let key!(':') = key_event {
             return EventResult::Ignored(None);
         }
@@ -994,6 +1011,17 @@ impl Component for Explorer {
         })()
         .unwrap_or_else(|err| cx.editor.set_error(format!("{err}")));
 
+        if let Some(select) = self.pending_select.take() {
+            self.show_help = false;
+            cx.editor.autoinfo = None;
+            let callback: crate::compositor::Callback = Box::new(
+                move |compositor: &mut crate::compositor::Compositor, _cx: &mut crate::compositor::Context| {
+                    compositor.push(select);
+                },
+            );
+            return EventResult::Consumed(Some(callback));
+        }
+
         EventResult::Consumed(None)
     }
 
@@ -1008,12 +1036,7 @@ impl Component for Explorer {
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        if let Some(prompt) = self
-            .prompt
-            .as_ref()
-            .map(|(_, prompt)| prompt)
-            .or_else(|| self.tree.prompt())
-        {
+        if let Some(prompt) = self.tree.prompt() {
             let (x, y) = (area.x, area.y + area.height.saturating_sub(1));
             prompt.cursor(Rect::new(x, y, area.width, 1), editor)
         } else {

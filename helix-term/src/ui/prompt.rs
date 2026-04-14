@@ -47,6 +47,7 @@ pub struct Prompt {
     pub doc_fn: DocFn,
     next_char_handler: Option<PromptCharHandler>,
     language: Option<(&'static str, Arc<ArcSwap<syntax::Loader>>)>,
+    auto_close: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,7 +104,15 @@ impl Prompt {
             doc_fn: Box::new(|_| None),
             next_char_handler: None,
             language: None,
+            auto_close: true,
         }
+    }
+
+    /// When set to `false`, the prompt will not close after Enter (Validate).
+    /// The parent component is responsible for closing.
+    pub fn auto_close(mut self, auto_close: bool) -> Self {
+        self.auto_close = auto_close;
+        self
     }
 
     /// Gets the byte index in the input representing the current cursor location.
@@ -705,7 +714,10 @@ impl Component for Prompt {
 
                     (self.callback_fn)(cx, input, PromptEvent::Validate);
 
-                    return close_fn;
+                    if self.auto_close {
+                        return close_fn;
+                    }
+                    return EventResult::Consumed(None);
                 }
             }
             ctrl!('p') | key!(Up) => {
