@@ -303,17 +303,29 @@ impl Explorer {
         }
     }
 
-    pub fn reveal_file(&mut self, path: PathBuf) -> Result<()> {
-        let current_root = &self.state.current_root.canonicalize()?;
-        let current_path = &path.canonicalize()?;
-        let stripped = current_path.strip_prefix(current_root).map_err(|_| {
-            anyhow::anyhow!(
-                "File '{}' is outside the explorer root '{}'",
-                current_path.display(),
-                current_root.display()
-            )
-        })?;
+    /// Change the explorer root to a new directory, rebuilding the tree.
+    fn change_root(&mut self, new_root: PathBuf) -> Result<()> {
+        let tree = Self::new_tree_view(new_root.clone())?;
+        self.tree = tree;
+        self.state.current_root = new_root;
+        Ok(())
+    }
 
+    pub fn reveal_file(&mut self, path: PathBuf) -> Result<()> {
+        let current_root = self.state.current_root.canonicalize()?;
+        let current_path = path.canonicalize()?;
+
+        if current_path.strip_prefix(&current_root).is_err() {
+            // File is outside the current root — switch root to its parent
+            let new_root = current_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine parent of '{}'", current_path.display()))?
+                .to_path_buf();
+            self.change_root(new_root)?;
+        }
+
+        let current_root = self.state.current_root.canonicalize()?;
+        let stripped = current_path.strip_prefix(&current_root)?;
         let segments: Vec<_> = stripped
             .components()
             .map(|c| c.as_os_str().to_string_lossy().to_string())
@@ -333,13 +345,21 @@ impl Explorer {
 
     /// Silently sync the tree selection to match the currently active document.
     /// Does not change explorer focus/open state. If the file is outside the
-    /// explorer root or hidden, the selection is left unchanged.
+    /// explorer root, the explorer root is changed to the file's parent directory.
     pub fn sync_with_current_doc(&mut self, editor: &Editor) {
         let view_id = editor.tree.focus;
         let doc_id = editor.tree.get(view_id).doc;
         if let Some(doc) = editor.document(doc_id) {
             if let Some(path) = doc.path().cloned() {
+                let root_changed = !path
+                    .canonicalize()
+                    .ok()
+                    .and_then(|p| p.strip_prefix(self.state.current_root.canonicalize().ok()?).ok().map(|_| ()))
+                    .is_some();
                 let _ = self.reveal_file(path);
+                if root_changed {
+                    self.refresh_git_status(editor);
+                }
             }
         }
     }

@@ -300,6 +300,9 @@ pub struct TreeView<T: TreeViewItem> {
     /// For implementing vertical scroll
     winline: usize,
 
+    /// Absolute screen row of the selected item (set during render, used for mouse mapping)
+    selected_screen_row: u16,
+
     /// For implementing horizontal scoll
     column: usize,
 
@@ -333,6 +336,7 @@ impl<T: TreeViewItem> TreeView<T> {
             forward_jumps: vec![],
             saved_view: None,
             winline: 0,
+            selected_screen_row: 0,
             column: 0,
             max_len: 0,
             count: 0,
@@ -352,6 +356,10 @@ impl<T: TreeViewItem> TreeView<T> {
         if !self.tree.is_opened {
             let _ = self.tree.open(&self.params);
             self.regenerate_index();
+            // Select the first child (root is hidden)
+            if self.selected == 0 && self.tree.len() > 1 {
+                self.set_selected(1);
+            }
         }
     }
 
@@ -566,8 +574,7 @@ impl<T: TreeViewItem> TreeView<T> {
 
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // log::debug!("mouse-{} {} {}", row, self.winline, self.selected);
-                let cow = row as isize - self.winline as isize;
+                let cow = row as isize - self.selected_screen_row as isize;
                 let selected = if cow > 0 {
                     self.selected.saturating_add(cow as usize)
                 } else {
@@ -1092,10 +1099,12 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
             prompt.render_prompt(prompt_area, surface, cx)
         }
 
-        self.render_lines(area, cx, git_status, clipboard)
-            .into_iter()
-            .enumerate()
-            .for_each(|(index, line)| {
+        let lines = self.render_lines(area, cx, git_status, clipboard);
+        // Record the absolute screen row of the selected item for mouse click mapping.
+        // We need to find it and convert to an owned index before consuming lines,
+        // because render_lines borrows self.
+        let selected_visual_index = lines.iter().position(|l| l.selected);
+        for (index, line) in lines.into_iter().enumerate() {
                 let area = Rect {
                     y: area.y.saturating_add(index as u16),
                     height: 1,
@@ -1127,7 +1136,10 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
                         surface.set_span(sx, area.y, suffix, suffix_width);
                     }
                 }
-            });
+        }
+        if let Some(sel_idx) = selected_visual_index {
+            self.selected_screen_row = area.y.saturating_add(sel_idx as u16);
+        }
     }
 
     fn render_lines<'a>(
