@@ -39,6 +39,7 @@ struct FileInfo {
     file_type: FileType,
     path: PathBuf,
     is_ignored: bool,  // 标记文件是否被 gitignore
+    is_symlink: bool,
 }
 
 impl FileInfo {
@@ -47,6 +48,7 @@ impl FileInfo {
             file_type: FileType::Root,
             path,
             is_ignored: false,
+            is_symlink: false,
         }
     }
 
@@ -121,8 +123,9 @@ impl TreeViewItem for FileInfo {
                 if !state.show_ignored && is_ignored {
                     return None;
                 }
-                let meta = entry.metadata().ok()?;
-                let file_type = if meta.is_dir() {
+                let symlink_meta = entry.metadata().ok()?;
+                let is_symlink = entry.file_type().ok().map_or(false, |ft| ft.is_symlink());
+                let file_type = if symlink_meta.is_dir() {
                     FileType::Folder
                 } else {
                     FileType::File
@@ -131,6 +134,7 @@ impl TreeViewItem for FileInfo {
                     file_type,
                     path: self.path.join(entry.file_name()),
                     is_ignored,
+                    is_symlink,
                 })
             })
             .collect();
@@ -151,6 +155,10 @@ impl TreeViewItem for FileInfo {
 
     fn dimmed(&self) -> bool {
         self.is_ignored
+    }
+
+    fn is_symlink(&self) -> bool {
+        self.is_symlink
     }
 }
 

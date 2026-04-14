@@ -334,9 +334,14 @@ pub fn are_ignored(paths: &[PathBuf]) -> Vec<bool> {
     paths
         .iter()
         .map(|p| {
+            let mode = if p.is_dir() {
+                Some(gix::index::entry::Mode::DIR)
+            } else {
+                Some(gix::index::entry::Mode::FILE)
+            };
             p.strip_prefix(work_dir)
                 .ok()
-                .and_then(|rel| excludes.at_path(rel, None).ok())
+                .and_then(|rel| excludes.at_path(rel, mode).ok())
                 .map(|platform| platform.is_excluded())
                 .unwrap_or(false)
         })

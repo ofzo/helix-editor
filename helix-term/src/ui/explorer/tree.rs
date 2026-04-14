@@ -40,6 +40,10 @@ pub trait TreeViewItem: Sized + Ord {
     fn dimmed(&self) -> bool {
         false
     }
+
+    fn is_symlink(&self) -> bool {
+        false
+    }
 }
 
 fn tree_item_cmp<T: TreeViewItem>(item1: &T, item2: &T) -> Ordering {
@@ -893,6 +897,7 @@ impl<T: TreeViewItem> TreeView<T> {
 struct RenderedLine<'a> {
     indent: Spans<'a>,
     content: Span<'a>,
+    symlink_indicator: Option<Span<'a>>,
     suffix: Option<Span<'a>>,
     selected: bool,
     is_ancestor_of_current_item: bool,
@@ -1026,12 +1031,21 @@ fn render_tree<'a, T: TreeViewItem>(
         (content_style, suffix)
     };
 
+    // Prepend symlink arrow before git status suffix
+    let symlink_indicator = if tree.item.is_symlink() {
+        let sym_style = cx.editor.theme.try_get("ui.text.info").unwrap_or(content_style);
+        Some(Span::styled(" 󰏌 ", sym_style))
+    } else {
+        None
+    };
+
     let name = Span::styled(tree.item.name(), content_style);
     let head = RenderedLine {
         indent,
         selected: is_selected || is_clipped,
         is_ancestor_of_current_item,
         content: name,
+        symlink_indicator,
         suffix,
     };
 
@@ -1098,10 +1112,20 @@ impl<T: TreeViewItem + Clone> TreeView<T> {
                 let remaining = area.width.saturating_sub(indent_len).saturating_sub(1);
                 surface.set_span(x, area.y, &line.content, remaining);
 
-                if let Some(ref suffix) = line.suffix {
-                    let suffix_width = suffix.width() as u16;
-                    let suffix_x = area.x + area.width.saturating_sub(suffix_width).saturating_sub(1);
-                    surface.set_span(suffix_x, area.y, suffix, suffix_width);
+                // Calculate total suffix width (symlink indicator + git status)
+                let suffix_width = line.suffix.as_ref().map_or(0, |s| s.width()) as u16;
+                let sym_width = line.symlink_indicator.as_ref().map_or(0, |s| s.width()) as u16;
+                let total_suffix = suffix_width + sym_width;
+
+                if total_suffix > 0 {
+                    let mut sx = area.x + area.width.saturating_sub(total_suffix).saturating_sub(1);
+                    if let Some(ref sym) = line.symlink_indicator {
+                        surface.set_span(sx, area.y, sym, sym_width);
+                        sx += sym_width;
+                    }
+                    if let Some(ref suffix) = line.suffix {
+                        surface.set_span(sx, area.y, suffix, suffix_width);
+                    }
                 }
             });
     }
