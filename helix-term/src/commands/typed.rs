@@ -2648,7 +2648,7 @@ fn preview_diff_change(
     let doc_text = doc.text().slice(..);
     let diff_base = diff.diff_base();
 
-    let mut hunks: Vec<_> = diff
+    let hunks: Vec<_> = diff
         .hunks_intersecting_line_ranges(doc.selection(view.id).line_ranges(doc_text))
         .collect();
 
@@ -2656,69 +2656,170 @@ fn preview_diff_change(
         bail!("There are no changes under any selection");
     }
 
-    // Build styled diff lines with colors (unified diff format with line numbers)
-    let mut diff_lines: Vec<tui::text::Spans> = Vec::new();
+    use tui::text::{Span, Spans};
+    use ui::diff_text::{DiffLine, DiffLineKind, DiffOverlay};
+    use ui::markdown::highlighted_code_block;
+
+    let language = doc.language_name().unwrap_or("text").to_string();
+    let loader = editor.syn_loader.load();
+    let theme = &editor.theme;
+
+    // Collect old/new text blocks per hunk with line numbers
+    struct HunkBlock {
+        text: String,
+        start_line: u32,
+        kind: DiffLineKind,
+    }
+    let mut blocks: Vec<HunkBlock> = Vec::new();
 
     for hunk in &hunks {
-        // Removed lines (old content) from diff_base - red color
         if hunk.before.start < hunk.before.end {
             let start_char = diff_base.line_to_char(hunk.before.start as usize);
             let end_char = diff_base.line_to_char(hunk.before.end as usize);
-            let old_text: String = diff_base.slice(start_char..end_char).chunks().collect();
-            for (i, line) in old_text.lines().enumerate() {
-                let line_num = hunk.before.start + i as u32 + 1;
-                let spans = tui::text::Spans::from(vec![
-                    tui::text::Span::styled(
-                        format!("{:>4} ", line_num),
-                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
-                    ),
-                    tui::text::Span::styled(
-                        format!("- {}", line),
-                        helix_view::graphics::Style::default()
-                            .fg(helix_view::graphics::Color::White)
-                            .bg(helix_view::graphics::Color::Red),
-                    ),
-                ]);
-                diff_lines.push(spans);
-            }
+            let text: String = diff_base.slice(start_char..end_char).chunks().collect();
+            blocks.push(HunkBlock {
+                text,
+                start_line: hunk.before.start + 1,
+                kind: DiffLineKind::Removed,
+            });
         }
-
-        // Added lines (new content) from doc_text - green color
         if hunk.after.start < hunk.after.end {
             let start_char = doc_text.line_to_char(hunk.after.start as usize);
             let end_char = doc_text.line_to_char(hunk.after.end as usize);
-            let new_text: String = doc_text.slice(start_char..end_char).chunks().collect();
-            for (i, line) in new_text.lines().enumerate() {
-                let line_num = hunk.after.start + i as u32 + 1;
-                let spans = tui::text::Spans::from(vec![
-                    tui::text::Span::styled(
-                        format!("{:>4} ", line_num),
-                        helix_view::graphics::Style::default().fg(helix_view::graphics::Color::Gray),
+            let text: String = doc_text.slice(start_char..end_char).chunks().collect();
+            blocks.push(HunkBlock {
+                text,
+                start_line: hunk.after.start + 1,
+                kind: DiffLineKind::Added,
+            });
+        }
+    }
+
+    // Calculate exact gutter layout to align diff line numbers and diff indicators
+    use helix_view::editor::GutterType;
+    let mut prefix_width = 0usize;
+    let mut linenr_width = 0usize;
+    let mut between_linenr_and_diff = 0usize; // spacer(s) between line number and diff column
+    let mut diff_col_width = 0usize;
+    let mut after_diff = 0usize;
+    let mut found_linenr = false;
+    let mut found_diff = false;
+    for gutter in &view.gutters.layout {
+        let w = gutter.width(view, doc);
+        if matches!(gutter, GutterType::LineNumbers) {
+            linenr_width = w;
+            found_linenr = true;
+        } else if matches!(gutter, GutterType::Diff) {
+            diff_col_width = w;
+            found_diff = true;
+        } else if !found_linenr {
+            prefix_width += w;
+        } else if !found_diff {
+            between_linenr_and_diff += w;
+        } else {
+            after_diff += w;
+        }
+    }
+
+    let line_nr_style = theme.get("ui.linenr");
+    let added_gutter_style = theme.get("diff.plus.gutter");
+    let removed_gutter_style = theme.get("diff.minus.gutter");
+
+    let mut diff_lines: Vec<DiffLine> = Vec::new();
+
+    for block in &blocks {
+        let highlighted =
+            highlighted_code_block(&block.text, &language, Some(theme), &loader, None);
+        for (i, line_spans) in highlighted.lines.into_iter().enumerate() {
+            let line_num = block.start_line + i as u32;
+
+            let (diff_icon, diff_style) = match block.kind {
+                DiffLineKind::Added => ("+", added_gutter_style),
+                DiffLineKind::Removed => ("-", removed_gutter_style),
+            };
+
+            // Build gutter: [prefix][line_number][spacer(s)][diff_icon][after_diff]
+            let mut spans = vec![
+                Span::styled(
+                    format!("{:prefix_w$}{:>nr_w$}{:mid_w$}", "", line_num, "",
+                        prefix_w = prefix_width,
+                        nr_w = linenr_width,
+                        mid_w = between_linenr_and_diff,
                     ),
-                    tui::text::Span::styled(
-                        format!("+ {}", line),
-                        helix_view::graphics::Style::default()
-                            .fg(helix_view::graphics::Color::White)
-                            .bg(helix_view::graphics::Color::Green),
-                    ),
-                ]);
-                diff_lines.push(spans);
+                    line_nr_style,
+                ),
+            ];
+
+            if diff_col_width > 0 {
+                spans.push(Span::styled(
+                    format!("{:^col_w$}", diff_icon, col_w = diff_col_width),
+                    diff_style,
+                ));
             }
+
+            if after_diff > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(after_diff),
+                    line_nr_style,
+                ));
+            }
+
+            spans.extend(line_spans.0);
+            diff_lines.push(DiffLine {
+                kind: block.kind,
+                spans: Spans::from(spans),
+            });
         }
     }
 
     drop(diff);
 
+    let view_id = view.id;
+    let doc_id = doc.id();
+    let view_area = view.area;
+    let diff_height = diff_lines.len() as u16;
+    // Anchor: cursor char position in document (overlay stays at this line)
+    let anchor_char_pos = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    const MIN_BOTTOM_SPACE: u16 = 10;
+
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
+                // Ensure enough space below cursor: at least max(diff_height, MIN_BOTTOM_SPACE)
+                let needed_below = diff_height.max(MIN_BOTTOM_SPACE);
+
                 let cursor_pos = editor.cursor().0.unwrap_or_default();
-                let contents = tui::text::Text::from(diff_lines);
-                let contents = ui::Text::from(contents);
-                let popup = Popup::new("diff-preview", contents)
-                    .auto_close(true)
-                    .position(Some(helix_core::Position::new(cursor_pos.row + 1, 0)));
-                compositor.replace_or_push("diff-preview", popup);
+                let cursor_y = (cursor_pos.row as u16).max(view_area.y);
+                let available_below = view_area.bottom().saturating_sub(cursor_y);
+
+                // Scroll editor by moving the anchor forward so cursor has enough space below
+                if available_below < needed_below {
+                    let shortfall = needed_below.saturating_sub(available_below) as usize;
+                    let (view, doc) = current!(editor);
+                    if view.id == view_id {
+                        let text = doc.text().slice(..);
+                        let mut offset = doc.view_offset(view.id);
+                        let anchor_line = text.char_to_line(
+                            offset.anchor.min(text.len_chars()),
+                        );
+                        let new_line = (anchor_line + shortfall)
+                            .min(text.len_lines().saturating_sub(1));
+                        offset.anchor = text.line_to_char(new_line);
+                        offset.vertical_offset = 0;
+                        doc.set_view_offset(view.id, offset);
+                    }
+                }
+
+                let overlay = DiffOverlay::new(
+                    diff_lines,
+                    view_id,
+                    doc_id,
+                    anchor_char_pos,
+                );
+                compositor.replace_or_push("diff-overlay", overlay);
             },
         ));
         Ok(call)

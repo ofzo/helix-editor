@@ -1,13 +1,14 @@
 mod completion;
 mod confirm_dialog;
 pub mod debug;
+pub(crate) mod diff_text;
 mod document;
 pub(crate) mod editor;
 mod explorer;
 mod info;
 mod input_dialog;
 pub mod lsp;
-mod markdown;
+pub(crate) mod markdown;
 pub mod menu;
 pub mod overlay;
 pub mod picker;
