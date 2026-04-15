@@ -27,6 +27,7 @@ use tui::{
     widgets::{Block, Borders, Widget},
 };
 
+mod archive;
 mod tree;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
@@ -34,14 +35,24 @@ enum FileType {
     File,
     Folder,
     Root,
+    Archive,
+    ArchiveDir,
+    ArchiveFile,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+struct ArchiveContext {
+    archive_path: PathBuf,
+    entry_path: String,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 struct FileInfo {
     file_type: FileType,
     path: PathBuf,
-    is_ignored: bool,  // 标记文件是否被 gitignore
+    is_ignored: bool,
     is_symlink: bool,
+    archive_context: Option<ArchiveContext>,
 }
 
 impl FileInfo {
@@ -51,17 +62,21 @@ impl FileInfo {
             path,
             is_ignored: false,
             is_symlink: false,
+            archive_context: None,
         }
     }
 
     fn get_text(&self) -> Cow<'static, str> {
-        let text = match self.file_type {
-            // FileType::Root => self.path.display().to_string(),
-            FileType::Root | FileType::File | FileType::Folder => self
-                .path
-                .file_name()
-                .map_or("/".into(), |p| p.to_string_lossy().into_owned()),
-        };
+        if let Some(ref ctx) = self.archive_context {
+            let name = ctx.entry_path.trim_end_matches('/');
+            let name = name.rsplit('/').next().unwrap_or(name);
+            return name.to_string().into();
+        }
+
+        let text = self
+            .path
+            .file_name()
+            .map_or("/".into(), |p| p.to_string_lossy().into_owned());
 
         #[cfg(test)]
         let text = text.replace(std::path::MAIN_SEPARATOR, "/");
@@ -88,8 +103,12 @@ impl Ord for FileInfo {
         if let (Some(p1), Some(p2)) = (self.path.parent(), other.path.parent()) {
             if p1 == p2 {
                 match (self.file_type, other.file_type) {
-                    (Folder, File) => return Ordering::Less,
-                    (File, Folder) => return Ordering::Greater,
+                    (Folder, File) | (Folder, Archive) => return Ordering::Less,
+                    (File, Folder) | (Archive, Folder) => return Ordering::Greater,
+                    (Archive, File) => return Ordering::Less,
+                    (File, Archive) => return Ordering::Greater,
+                    (ArchiveDir, ArchiveFile) => return Ordering::Less,
+                    (ArchiveFile, ArchiveDir) => return Ordering::Greater,
                     _ => {}
                 };
             }
@@ -103,44 +122,25 @@ impl TreeViewItem for FileInfo {
 
     fn get_children(&self, state: &State) -> Result<Vec<Self>> {
         match self.file_type {
-            FileType::Root | FileType::Folder => {}
-            _ => return Ok(vec![]),
-        };
-
-        // Collect entries, filtering .git
-        let entries: Vec<_> = std::fs::read_dir(&self.path)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name() != ".git")
-            .collect();
-
-        let paths: Vec<PathBuf> = entries.iter().map(|e| self.path.join(e.file_name())).collect();
-
-        // Single batch gitignore check instead of per-file subprocess
-        let ignored = helix_vcs::are_ignored(&paths);
-
-        let ret = entries
-            .into_iter()
-            .zip(ignored)
-            .filter_map(|(entry, is_ignored)| {
-                if !state.show_ignored && is_ignored {
-                    return None;
+            FileType::Root | FileType::Folder => {
+                return self.get_filesystem_children(state);
+            }
+            FileType::Archive => {
+                return self.get_archive_children("");
+            }
+            FileType::ArchiveDir => {
+                if let Some(ref ctx) = self.archive_context {
+                    let prefix = if ctx.entry_path.ends_with('/') {
+                        ctx.entry_path.clone()
+                    } else {
+                        format!("{}/", ctx.entry_path)
+                    };
+                    return self.get_archive_children(&prefix);
                 }
-                let symlink_meta = entry.metadata().ok()?;
-                let is_symlink = entry.file_type().ok().map_or(false, |ft| ft.is_symlink());
-                let file_type = if symlink_meta.is_dir() {
-                    FileType::Folder
-                } else {
-                    FileType::File
-                };
-                Some(FileInfo {
-                    file_type,
-                    path: self.path.join(entry.file_name()),
-                    is_ignored,
-                    is_symlink,
-                })
-            })
-            .collect();
-        Ok(ret)
+                return Ok(vec![]);
+            }
+            FileType::File | FileType::ArchiveFile => return Ok(vec![]),
+        };
     }
 
     fn name(&self) -> String {
@@ -152,7 +152,10 @@ impl TreeViewItem for FileInfo {
     }
 
     fn is_parent(&self) -> bool {
-        matches!(self.file_type, FileType::Folder | FileType::Root)
+        matches!(
+            self.file_type,
+            FileType::Folder | FileType::Root | FileType::Archive | FileType::ArchiveDir
+        )
     }
 
     fn dimmed(&self) -> bool {
@@ -162,8 +165,96 @@ impl TreeViewItem for FileInfo {
     fn is_symlink(&self) -> bool {
         self.is_symlink
     }
+
+    fn icon_path(&self) -> Option<PathBuf> {
+        match self.file_type {
+            FileType::Archive => Some(self.path.clone()),
+            FileType::ArchiveDir | FileType::ArchiveFile => {
+                self.archive_context.as_ref().map(|ctx| PathBuf::from(&ctx.entry_path))
+            }
+            _ => None,
+        }
+    }
 }
 
+impl FileInfo {
+    fn get_filesystem_children(&self, state: &State) -> Result<Vec<Self>> {
+        let entries: Vec<_> = std::fs::read_dir(&self.path)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != ".git")
+            .collect();
+
+        let paths: Vec<PathBuf> = entries.iter().map(|e| self.path.join(e.file_name())).collect();
+        let ignored = helix_vcs::are_ignored(&paths);
+
+        let ret = entries
+            .into_iter()
+            .zip(ignored)
+            .filter_map(|(entry, is_ignored)| {
+                if !state.show_ignored && is_ignored {
+                    return None;
+                }
+                let symlink_meta = entry.metadata().ok()?;
+                let is_symlink = entry.file_type().ok().map_or(false, |ft| ft.is_symlink());
+                let entry_path = self.path.join(entry.file_name());
+                let file_type = if symlink_meta.is_dir() {
+                    FileType::Folder
+                } else if archive::is_archive(&entry_path) {
+                    FileType::Archive
+                } else {
+                    FileType::File
+                };
+                Some(FileInfo {
+                    file_type,
+                    path: entry_path,
+                    is_ignored,
+                    is_symlink,
+                    archive_context: None,
+                })
+            })
+            .collect();
+        Ok(ret)
+    }
+
+    /// Archives larger than this are not browsable to avoid UI freezes.
+    const ARCHIVE_SIZE_LIMIT: u64 = 50 * 1024 * 1024; // 50 MB
+
+    fn get_archive_children(&self, prefix: &str) -> Result<Vec<Self>> {
+        let archive_path = match &self.archive_context {
+            Some(ctx) => ctx.archive_path.clone(),
+            None => self.path.clone(),
+        };
+        let size = std::fs::metadata(&archive_path)?.len();
+        ensure!(
+            size <= Self::ARCHIVE_SIZE_LIMIT,
+            "Archive too large ({:.1} MB). Extract manually to browse.",
+            size as f64 / (1024.0 * 1024.0)
+        );
+        let entries = archive::list_entries(&archive_path)?;
+        let children = archive::direct_children(&entries, prefix);
+        Ok(children
+            .into_iter()
+            .map(|entry| {
+                let file_type = if entry.is_dir {
+                    FileType::ArchiveDir
+                } else {
+                    FileType::ArchiveFile
+                };
+                let synthetic_path = archive_path.join(format!("!/{}", entry.path));
+                FileInfo {
+                    file_type,
+                    path: synthetic_path,
+                    is_ignored: false,
+                    is_symlink: false,
+                    archive_context: Some(ArchiveContext {
+                        archive_path: archive_path.clone(),
+                        entry_path: entry.path,
+                    }),
+                }
+            })
+            .collect())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClipboardOp {
@@ -351,6 +442,10 @@ impl Explorer {
         let doc_id = editor.tree.get(view_id).doc;
         if let Some(doc) = editor.document(doc_id) {
             if let Some(path) = doc.path().cloned() {
+                // Skip sync for archive entries (synthetic paths that don't exist on disk)
+                if !path.exists() {
+                    return;
+                }
                 let root_changed = !path
                     .canonicalize()
                     .ok()
@@ -450,6 +545,10 @@ impl Explorer {
 
     fn nearest_folder(&self) -> Result<PathBuf> {
         let current = self.tree.current()?.item();
+        ensure!(
+            current.archive_context.is_none(),
+            "Cannot use archive entries as paste target"
+        );
         if current.is_parent() {
             Ok(current.path.to_path_buf())
         } else {
@@ -466,6 +565,7 @@ impl Explorer {
     fn cut_current(&mut self) -> Result<()> {
         let item = self.tree.current()?.item();
         ensure!(item.file_type != FileType::Root, "Cannot cut root");
+        ensure!(item.archive_context.is_none(), "Cannot cut archive entries");
         self.clipboard = Some(ExplorerClipboard {
             path: item.path.clone(),
             op: ClipboardOp::Cut,
@@ -476,6 +576,7 @@ impl Explorer {
     fn copy_current(&mut self) -> Result<()> {
         let item = self.tree.current()?.item();
         ensure!(item.file_type != FileType::Root, "Cannot copy root");
+        ensure!(item.archive_context.is_none(), "Cannot copy archive entries");
         self.clipboard = Some(ExplorerClipboard {
             path: item.path.clone(),
             op: ClipboardOp::Copy,
@@ -517,13 +618,20 @@ impl Explorer {
         let item = self.tree.current()?.item();
         match item.file_type {
             FileType::Folder => self.new_remove_folder_prompt(),
-            FileType::File => self.new_remove_file_prompt(),
+            FileType::File | FileType::Archive => self.new_remove_file_prompt(),
             FileType::Root => bail!("Root is not removable"),
+            FileType::ArchiveDir | FileType::ArchiveFile => {
+                bail!("Cannot delete entries inside an archive")
+            }
         }
     }
 
     fn new_rename_prompt(&mut self, cx: &mut Context) -> Result<()> {
         let item = self.tree.current_item()?;
+        ensure!(
+            item.archive_context.is_none(),
+            "Cannot rename entries inside an archive"
+        );
         let path = item.path.clone();
         let rel = self.relative_display_path(&path);
         let root = self.state.current_root.clone();
@@ -659,6 +767,17 @@ impl Explorer {
             if item.path == Path::new("") {
                 return Ok(TreeOp::Noop);
             }
+
+            // Archive entries: expand dirs, open files as read-only
+            if matches!(item.file_type, FileType::Archive | FileType::ArchiveDir) {
+                return Ok(TreeOp::GetChildsAndInsert);
+            }
+            if item.file_type == FileType::ArchiveFile {
+                Self::open_archive_entry(item, cx, Action::Replace)?;
+                state.focus = false;
+                return Ok(TreeOp::Noop);
+            }
+
             let meta = std::fs::metadata(&item.path)?;
             if meta.is_file() {
                 cx.editor.open(&item.path, Action::Replace)?;
@@ -683,9 +802,18 @@ impl Explorer {
             if item.path == Path::new("") {
                 return Ok(TreeOp::Noop);
             }
+
+            if matches!(item.file_type, FileType::Archive | FileType::ArchiveDir) {
+                return Ok(TreeOp::GetChildsAndInsert);
+            }
+            if item.file_type == FileType::ArchiveFile {
+                Self::open_archive_entry(item, cx, Action::VerticalSplit)?;
+                state.focus = false;
+                return Ok(TreeOp::Noop);
+            }
+
             let meta = std::fs::metadata(&item.path)?;
             if meta.is_file() {
-                // 使用 VerticalSplit 在右侧打开新窗口
                 cx.editor.open(&item.path, Action::VerticalSplit)?;
                 state.focus = false;
                 return Ok(TreeOp::Noop);
@@ -701,6 +829,36 @@ impl Explorer {
             cx.editor.set_error(format!("{err}"));
             TreeOp::Noop
         })
+    }
+
+    fn open_archive_entry(item: &FileInfo, cx: &mut Context, action: Action) -> Result<()> {
+        let ctx = item
+            .archive_context
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ArchiveFile missing context"))?;
+        let size = std::fs::metadata(&ctx.archive_path)?.len();
+        ensure!(
+            size <= FileInfo::ARCHIVE_SIZE_LIMIT,
+            "Archive too large ({:.1} MB). Extract manually to view files.",
+            size as f64 / (1024.0 * 1024.0)
+        );
+        let bytes = archive::read_entry(&ctx.archive_path, &ctx.entry_path)?;
+        let (rope, encoding, has_bom) =
+            helix_view::document::from_reader(&mut bytes.as_slice(), None)?;
+        let mut doc = helix_view::Document::from(
+            rope,
+            Some((encoding, has_bom)),
+            cx.editor.config.clone(),
+            cx.editor.syn_loader.clone(),
+        );
+        let display_path = PathBuf::from(&ctx.entry_path);
+        doc.set_path(Some(&display_path));
+        doc.readonly = true;
+        let loader = cx.editor.syn_loader.load();
+        doc.detect_language(&loader);
+        doc.detect_indent_and_line_ending();
+        cx.editor.new_file_from_document(action, doc);
+        Ok(())
     }
 
     fn open_file_picker(&mut self, cx: &mut Context) {

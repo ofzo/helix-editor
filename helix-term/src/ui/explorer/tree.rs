@@ -44,6 +44,12 @@ pub trait TreeViewItem: Sized + Ord {
     fn is_symlink(&self) -> bool {
         false
     }
+
+    /// Override the icon path for parent nodes that should show a file icon
+    /// instead of the default expand/collapse chevron (e.g. archive files).
+    fn icon_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 fn tree_item_cmp<T: TreeViewItem>(item1: &T, item2: &T) -> Ordering {
@@ -960,7 +966,19 @@ fn render_tree<'a, T: TreeViewItem>(
             style
         };
 
-        let indicator = if tree.item().is_parent() {
+        let indicator = if let Some(icon_path) = tree.item().icon_path() {
+            let icons = ICONS.load_full();
+            if let Some(icon) = icons.fs().from_path(&icon_path) {
+                let icon_color = if is_selected { None } else { icon.color() };
+                if let Some(color) = icon_color {
+                    Span::styled(format!("{} ", icon.glyph()), Style::default().fg(color))
+                } else {
+                    Span::raw(format!("{} ", icon.glyph()))
+                }
+            } else {
+                Span::styled("  ", indicator_style)
+            }
+        } else if tree.item().is_parent() {
             if tree.is_opened {
                 Span::styled(" ", indicator_style)
             } else {

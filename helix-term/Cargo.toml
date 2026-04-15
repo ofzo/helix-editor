@@ -91,6 +91,11 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 dashmap = "6.0"
+
+# Archive browsing
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
 alacritty_terminal = { workspace = true }
 parking_lot = { workspace = true }
 
