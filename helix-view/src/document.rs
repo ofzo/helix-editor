@@ -1123,6 +1123,10 @@ impl Document {
         impl Future<Output = Result<DocumentSavedEvent, anyhow::Error>> + 'static + Send,
         anyhow::Error,
     > {
+        if self.readonly && !force {
+            bail!("Cannot save readonly file (use :w! to override)");
+        }
+
         log::debug!(
             "submitting save of doc '{:?}'",
             self.path().map(|path| path.to_string_lossy())
@@ -1376,6 +1380,11 @@ impl Document {
 
     // Detect if the file is readonly and change the readonly field if necessary (unix only)
     pub fn detect_readonly(&mut self) {
+        // Binary and image files are always readonly regardless of filesystem permissions
+        if self.is_binary || self.is_image {
+            self.readonly = true;
+            return;
+        }
         // Allows setting the flag for files the user cannot modify, like root files
         self.readonly = match &self.path {
             None => false,
@@ -1751,6 +1760,9 @@ impl Document {
         view_id: ViewId,
         emit_lsp_notification: bool,
     ) -> bool {
+        if self.readonly && !transaction.changes().is_empty() {
+            return false;
+        }
         // store the state just before any changes are made. This allows us to undo to the
         // state just before a transaction was applied.
         if self.changes.is_empty() && !transaction.changes().is_empty() {

@@ -3188,6 +3188,11 @@ fn ensure_selections_forward(cx: &mut Context) {
 }
 
 fn enter_insert_mode(cx: &mut Context) {
+    let doc = doc!(cx.editor);
+    if doc.readonly {
+        cx.editor.set_error("Cannot edit readonly file");
+        return;
+    }
     cx.editor.mode = Mode::Insert;
 }
 
