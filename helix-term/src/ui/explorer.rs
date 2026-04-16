@@ -781,7 +781,11 @@ impl Explorer {
             let meta = std::fs::metadata(&item.path)?;
             if meta.is_file() {
                 cx.editor.open(&item.path, Action::Replace)?;
-                state.focus = false;
+                // Keep focus on explorer for image files (preview only)
+                let doc = doc!(cx.editor);
+                if !doc.is_image {
+                    state.focus = false;
+                }
                 return Ok(TreeOp::Noop);
             }
 

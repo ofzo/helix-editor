@@ -22,6 +22,15 @@ pub use self::crossterm::CrosstermBackend;
 mod test;
 pub use self::test::TestBackend;
 
+/// Supported terminal graphics protocols for inline image display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsProtocol {
+    /// Kitty graphics protocol — supported by Kitty, WezTerm, Ghostty.
+    Kitty,
+    /// iTerm2 inline images (OSC 1337) — supported by iTerm2, WezTerm.
+    Iterm2,
+}
+
 /// Representation of a terminal backend.
 pub trait Backend {
     /// Claims the terminal for TUI use.
@@ -49,4 +58,33 @@ pub trait Backend {
     fn supports_true_color(&self) -> bool;
     fn get_theme_mode(&self) -> Option<helix_view::theme::Mode>;
     fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()>;
+
+    /// Returns the terminal graphics protocol supported by this backend, if any.
+    fn graphics_protocol(&self) -> Option<GraphicsProtocol> {
+        None
+    }
+
+    /// Returns the pixel dimensions of a single terminal cell (width, height).
+    /// Falls back to (8, 16) if the terminal doesn't report pixel size.
+    fn cell_pixel_size(&self) -> (u16, u16) {
+        (8, 16)
+    }
+
+    /// Clear all previously rendered terminal protocol images.
+    fn clear_images(&mut self) -> Result<(), io::Error> {
+        Ok(())
+    }
+
+    /// Render a PNG image at the given cell position spanning width x height cells.
+    /// The image_data should be PNG-encoded bytes.
+    fn draw_image(
+        &mut self,
+        _x: u16,
+        _y: u16,
+        _width: u16,
+        _height: u16,
+        _image_png: &[u8],
+    ) -> Result<(), io::Error> {
+        Ok(())
+    }
 }

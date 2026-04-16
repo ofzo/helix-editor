@@ -636,6 +636,34 @@ impl EditorView {
         let area = view.area;
         let theme = &editor.theme;
         let config = editor.config();
+
+        // Image documents: render image only, skip all editor chrome
+        if doc.is_image {
+            if editor.has_graphics_protocol {
+                // Fill with spaces so the buffer diff doesn't overwrite the image
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        if let Some(cell) = surface.get_mut(x, y) {
+                            cell.set_symbol(" ");
+                        }
+                    }
+                }
+            } else if let Some(ref image_bytes) = doc.image_bytes {
+                crate::ui::image_view::render_image_halfblock(surface, inner, image_bytes, editor.cell_pixel_size);
+            }
+            // Draw right border if not at screen edge
+            if viewport.right() != view.area.right() {
+                let x = area.right();
+                let border_style = theme.get("ui.window");
+                for y in area.top()..area.bottom() {
+                    surface[(x, y)]
+                        .set_symbol(tui::symbols::line::VERTICAL)
+                        .set_style(border_style);
+                }
+            }
+            return;
+        }
+
         let loader = editor.syn_loader.load();
 
         let view_offset = doc.view_offset(view.id);
@@ -2508,6 +2536,34 @@ impl Component for EditorView {
             self.render_view(cx.editor, doc, view, area, surface, is_focused);
         }
 
+        // Queue protocol-based image renders for image documents
+        if cx.editor.has_graphics_protocol {
+            for (view, _) in cx.editor.tree.views() {
+                let doc = cx.editor.document(view.doc).unwrap();
+                if doc.is_image {
+                    if let Some(ref img_bytes) = doc.image_bytes {
+                        let inner = view.inner_area(doc);
+                        if let Some(encoded) = crate::ui::image_view::encode_png_for_viewport(
+                            img_bytes,
+                            inner.width,
+                            inner.height,
+                            cx.editor.cell_pixel_size,
+                        ) {
+                            cx.editor.pending_image_renders.push(
+                                helix_view::editor::PendingImageRender {
+                                    x: inner.x + encoded.x_offset,
+                                    y: inner.y + encoded.y_offset,
+                                    width: encoded.cols,
+                                    height: encoded.rows,
+                                    png_bytes: encoded.png_bytes,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Render debug layout panels (sidebar + console) when debug is active
         if let Some(areas) = debug_areas {
             let debug_layout = self
@@ -2654,6 +2710,12 @@ impl Component for EditorView {
                 }
             }
         }
+        // Hide cursor for image documents
+        let (_view, doc) = current_ref!(editor);
+        if doc.is_image {
+            return (None, CursorKind::Hidden);
+        }
+
         match editor.cursor() {
             // all block cursors are drawn manually
             (pos, CursorKind::Block) => {

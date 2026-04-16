@@ -1298,6 +1298,23 @@ pub struct Editor {
     pub debug_session: crate::debug::DebugSession,
     /// Breakpoints stored per file path.
     pub breakpoints: crate::debug::BreakpointStore,
+
+    /// Pending image render requests, consumed after terminal.draw().
+    pub pending_image_renders: Vec<PendingImageRender>,
+    /// Whether the terminal supports a graphics protocol (set during init).
+    pub has_graphics_protocol: bool,
+    /// Pixel dimensions of a single terminal cell (width, height).
+    pub cell_pixel_size: (u16, u16),
+}
+
+/// A request to render an image using the terminal graphics protocol.
+#[derive(Debug)]
+pub struct PendingImageRender {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub png_bytes: Vec<u8>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1437,6 +1454,9 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             debug_session: crate::debug::DebugSession::default(),
             breakpoints: crate::debug::BreakpointStore::new(),
+            pending_image_renders: Vec::new(),
+            has_graphics_protocol: false,
+            cell_pixel_size: (8, 16),
         }
     }
 

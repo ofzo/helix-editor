@@ -208,6 +208,12 @@ pub struct Document {
     pub focused_at: std::time::Instant,
 
     pub readonly: bool,
+    /// Whether this document contains binary content displayed as hex dump.
+    pub is_binary: bool,
+    /// Whether this document is an image file for inline preview.
+    pub is_image: bool,
+    /// Raw image bytes for terminal rendering (only set when is_image=true).
+    pub image_bytes: Option<Vec<u8>>,
 
     pub previous_diagnostic_id: Option<String>,
 
@@ -457,6 +463,60 @@ fn apply_bom(encoding: &'static encoding::Encoding, buf: &mut [u8; BUF_SIZE]) ->
     } else {
         0
     }
+}
+
+/// Check if a path has a known image file extension.
+fn is_image_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico")
+    )
+}
+
+/// Format raw bytes as a hex dump string.
+///
+/// Output format (16 bytes per line):
+/// ```text
+/// 00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|
+/// ```
+fn format_hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    // Pre-allocate: each line is ~78 chars, one line per 16 bytes
+    let line_count = (bytes.len() + 15) / 16;
+    let mut result = String::with_capacity(line_count * 78);
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        // Offset
+        write!(result, "{:08x}  ", i * 16).unwrap();
+        // Hex bytes
+        for (j, byte) in chunk.iter().enumerate() {
+            if j == 8 {
+                result.push(' ');
+            }
+            write!(result, "{:02x} ", byte).unwrap();
+        }
+        // Padding for short last line
+        for j in chunk.len()..16 {
+            if j == 8 {
+                result.push(' ');
+            }
+            result.push_str("   ");
+        }
+        // ASCII representation
+        result.push_str(" |");
+        for byte in chunk {
+            let c = if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte as char
+            } else {
+                '.'
+            };
+            result.push(c);
+        }
+        result.push_str("|\n");
+    }
+    result
 }
 
 // The documentation and implementation of this function should be up-to-date with
@@ -765,6 +825,9 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            is_binary: false,
+            is_image: false,
+            image_bytes: None,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             color_swatches: None,
@@ -815,9 +878,50 @@ impl Document {
         encoding = encoding.or(editor_config.encoding);
 
         // Open the file if it exists, otherwise assume it is a new file (and thus empty).
+        let mut is_binary_file = false;
+        let mut is_image_file = false;
+        let mut img_bytes: Option<Vec<u8>> = None;
+
+        // Check if this is a known image format before opening
+        let is_known_image = is_image_extension(path);
+
         let (rope, encoding, has_bom) = if path.exists() {
-            let mut file = std::fs::File::open(path)?;
-            from_reader(&mut file, encoding)?
+            use std::io::{Read as _, Seek as _};
+
+            if is_known_image {
+                // Read image file bytes for inline preview
+                let mut file = std::fs::File::open(path)?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                is_image_file = true;
+                img_bytes = Some(bytes);
+                // Use a placeholder rope — rendering is handled by image_view
+                let placeholder = format!("[Image: {}]", path.display());
+                (Rope::from_str(&placeholder), encoding::UTF_8, false)
+            } else {
+                let mut file = std::fs::File::open(path)?;
+
+                // Read first 1024 bytes to detect binary content
+                let mut detect_buf = Vec::new();
+                let n = (&mut file).take(1024).read_to_end(&mut detect_buf)?;
+                let content_type = content_inspector::inspect(&detect_buf[..n]);
+
+                if content_type.is_binary() {
+                    // Re-read the entire file (up to 10MB) and format as hex dump
+                    file.seek(std::io::SeekFrom::Start(0))?;
+                    const MAX_BINARY_SIZE: u64 = 10 * 1024 * 1024;
+                    let mut bytes = Vec::new();
+                    file.take(MAX_BINARY_SIZE).read_to_end(&mut bytes)?;
+
+                    let hex_text = format_hex_dump(&bytes);
+                    is_binary_file = true;
+                    (Rope::from_str(&hex_text), encoding::UTF_8, false)
+                } else {
+                    // Normal text file path
+                    file.seek(std::io::SeekFrom::Start(0))?;
+                    from_reader(&mut file, encoding)?
+                }
+            }
         } else {
             let line_ending = editor_config
                 .line_ending
@@ -828,6 +932,16 @@ impl Document {
 
         let loader = syn_loader.load();
         let mut doc = Self::from(rope, Some((encoding, has_bom)), config, syn_loader);
+
+        if is_binary_file {
+            doc.is_binary = true;
+            doc.readonly = true;
+        }
+        if is_image_file {
+            doc.is_image = true;
+            doc.image_bytes = img_bytes;
+            doc.readonly = true;
+        }
 
         // set the path and try detecting the language
         doc.set_path(Some(path));

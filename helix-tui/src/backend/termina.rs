@@ -56,6 +56,8 @@ struct Capabilities {
     /// OSC11 / OSC111 - change the terminal's background color.
     dynamic_background_color: bool,
     theme_mode: Option<theme::Mode>,
+    /// Detected terminal graphics protocol for inline image rendering.
+    graphics_protocol: Option<super::GraphicsProtocol>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,9 @@ impl TerminaBackend {
         }
 
         capabilities.extended_underlines |= config.force_enable_extended_underlines;
+
+        // Detect terminal graphics protocol based on terminal emulator identity.
+        capabilities.graphics_protocol = detect_graphics_protocol();
 
         let mut reset_cursor_command = String::new();
         if let Ok(t) = termini::TermInfo::from_env() {
@@ -638,6 +643,171 @@ impl Backend for TerminaBackend {
             self.reset_background_color()
         }
     }
+
+    fn graphics_protocol(&self) -> Option<super::GraphicsProtocol> {
+        self.capabilities.graphics_protocol
+    }
+
+    fn cell_pixel_size(&self) -> (u16, u16) {
+        if let Ok(ws) = self.terminal.get_dimensions() {
+            if let (Some(pw), Some(ph)) = (ws.pixel_width, ws.pixel_height) {
+                if pw > 0 && ph > 0 && ws.cols > 0 && ws.rows > 0 {
+                    return (pw / ws.cols, ph / ws.rows);
+                }
+            }
+        }
+        (8, 16) // fallback
+    }
+
+    fn clear_images(&mut self) -> io::Result<()> {
+        use super::GraphicsProtocol;
+        match self.capabilities.graphics_protocol {
+            Some(GraphicsProtocol::Kitty) => {
+                // Kitty: delete all images on screen
+                // a=d (delete), d=a (all visible placements)
+                write!(self.terminal, "\x1b_Ga=d,d=a;\x1b\\")?;
+                self.terminal.flush()
+            }
+            Some(GraphicsProtocol::Iterm2) => {
+                // iTerm2 doesn't have a dedicated clear command;
+                // images are cleared when cells are overwritten by the normal
+                // terminal draw pass, so no action needed here.
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn draw_image(
+        &mut self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        image_png: &[u8],
+    ) -> io::Result<()> {
+        use super::GraphicsProtocol;
+        match self.capabilities.graphics_protocol {
+            Some(GraphicsProtocol::Kitty) => {
+                self.draw_image_kitty(x, y, width, height, image_png)
+            }
+            Some(GraphicsProtocol::Iterm2) => {
+                self.draw_image_iterm2(x, y, width, height, image_png)
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl TerminaBackend {
+    /// Render image using the Kitty graphics protocol.
+    /// Sends PNG data as base64, placing the image at (x, y) spanning width x height cells.
+    fn draw_image_kitty(
+        &mut self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        image_png: &[u8],
+    ) -> io::Result<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        // Position cursor at the target location
+        write!(
+            self.terminal,
+            "{}",
+            Csi::Cursor(csi::Cursor::Position {
+                col: OneBased::from_zero_based(x),
+                line: OneBased::from_zero_based(y),
+            })
+        )?;
+
+        let encoded = STANDARD.encode(image_png);
+        let chunk_size = 4096;
+
+        // Send image data in chunks
+        // a=T (transmit and display), f=100 (PNG), t=d (direct),
+        // c/r = target cell cols/rows (already aspect-ratio-correct from caller)
+        for (i, chunk) in encoded.as_bytes().chunks(chunk_size).enumerate() {
+            let is_last = (i + 1) * chunk_size >= encoded.len();
+            let m = if is_last { 0 } else { 1 };
+
+            if i == 0 {
+                write!(
+                    self.terminal,
+                    "\x1b_Gf=100,a=T,t=d,c={},r={},m={};",
+                    width, height, m
+                )?;
+            } else {
+                write!(self.terminal, "\x1b_Gm={};", m)?;
+            }
+            self.terminal.write_all(chunk)?;
+            write!(self.terminal, "\x1b\\")?;
+        }
+
+        Ok(())
+    }
+
+    /// Render image using the iTerm2 inline image protocol (OSC 1337).
+    fn draw_image_iterm2(
+        &mut self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        image_png: &[u8],
+    ) -> io::Result<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        // Position cursor at the target location
+        write!(
+            self.terminal,
+            "{}",
+            Csi::Cursor(csi::Cursor::Position {
+                col: OneBased::from_zero_based(x),
+                line: OneBased::from_zero_based(y),
+            })
+        )?;
+
+        let encoded = STANDARD.encode(image_png);
+
+        // OSC 1337 with explicit cell dimensions (already aspect-ratio-correct)
+        write!(
+            self.terminal,
+            "\x1b]1337;File=inline=1;width={};height={};preserveAspectRatio=1:",
+            width, height
+        )?;
+        write!(self.terminal, "{}", encoded)?;
+        write!(self.terminal, "\x07")?;
+
+        Ok(())
+    }
+}
+
+/// Detect the terminal graphics protocol based on environment variables.
+fn detect_graphics_protocol() -> Option<super::GraphicsProtocol> {
+    use super::GraphicsProtocol;
+
+    let term_program = std::env::var("TERM_PROGRAM").ok().unwrap_or_default();
+    match term_program.as_str() {
+        "WezTerm" => return Some(GraphicsProtocol::Kitty),
+        "iTerm.app" => return Some(GraphicsProtocol::Iterm2),
+        _ => {}
+    }
+
+    // Check TERM for kitty
+    if let Ok(term) = std::env::var("TERM") {
+        if term.contains("kitty") || term.contains("xterm-kitty") {
+            return Some(GraphicsProtocol::Kitty);
+        }
+    }
+
+    // Ghostty sets GHOSTTY_RESOURCES_DIR and supports Kitty graphics
+    if std::env::var("GHOSTTY_RESOURCES_DIR").is_ok() {
+        return Some(GraphicsProtocol::Kitty);
+    }
+
+    None
 }
 
 impl Drop for TerminaBackend {

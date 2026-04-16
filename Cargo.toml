@@ -61,6 +61,8 @@ alacritty_terminal = "0.25"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
+base64 = "0.22"
 
 [workspace.package]
 version = "25.7.1"

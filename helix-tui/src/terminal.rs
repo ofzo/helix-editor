@@ -246,4 +246,32 @@ where
     pub fn size(&self) -> Rect {
         self.backend.size().unwrap_or(DEFAULT_TERMINAL_SIZE)
     }
+
+    /// Returns the terminal graphics protocol supported by the backend, if any.
+    pub fn graphics_protocol(&self) -> Option<crate::backend::GraphicsProtocol> {
+        self.backend.graphics_protocol()
+    }
+
+    /// Returns the pixel dimensions of a single terminal cell (width, height).
+    pub fn cell_pixel_size(&self) -> (u16, u16) {
+        self.backend.cell_pixel_size()
+    }
+
+    /// Clear all previously rendered terminal protocol images.
+    pub fn clear_images(&mut self) -> io::Result<()> {
+        self.backend.clear_images()
+    }
+
+    /// Render a PNG image at the given cell position.
+    pub fn draw_image(
+        &mut self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        image_png: &[u8],
+    ) -> io::Result<()> {
+        self.backend.draw_image(x, y, width, height, image_png)?;
+        self.backend.flush()
+    }
 }

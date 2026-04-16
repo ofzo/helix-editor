@@ -196,6 +196,11 @@ impl Compositor {
         (None, CursorKind::Hidden)
     }
 
+    /// Returns true if there are overlay layers above the base editor view.
+    pub fn has_overlay(&self) -> bool {
+        self.layers.len() > 1
+    }
+
     pub fn has_component(&self, type_name: &str) -> bool {
         self.layers
             .iter()

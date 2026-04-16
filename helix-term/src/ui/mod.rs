@@ -4,6 +4,7 @@ pub mod debug;
 pub(crate) mod diff_text;
 mod document;
 pub(crate) mod editor;
+pub(crate) mod image_view;
 mod explorer;
 mod info;
 mod input_dialog;

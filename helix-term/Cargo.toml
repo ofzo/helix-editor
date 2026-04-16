@@ -96,6 +96,8 @@ dashmap = "6.0"
 zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
+# Image preview
+image = { workspace = true }
 alacritty_terminal = { workspace = true }
 parking_lot = { workspace = true }
 

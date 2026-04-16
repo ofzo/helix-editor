@@ -138,6 +138,8 @@ impl Application {
             })),
             handlers,
         );
+        editor.has_graphics_protocol = terminal.graphics_protocol().is_some();
+        editor.cell_pixel_size = terminal.cell_pixel_size();
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
@@ -310,6 +312,37 @@ impl Application {
 
         let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
         self.terminal.draw(pos, kind).unwrap();
+
+        // Process pending image renders after the buffer has been flushed.
+        // Skip when overlays (command bar, picker, completion) are active —
+        // protocol images can't be layered below cell backgrounds reliably.
+        let has_overlay = self.compositor.has_overlay();
+        let pending = std::mem::take(&mut self.editor.pending_image_renders);
+        if !pending.is_empty() && !has_overlay {
+            if let Err(e) = self.terminal.clear_images() {
+                log::error!("Failed to clear images: {}", e);
+            }
+            for req in pending {
+                if let Err(e) = self.terminal.draw_image(req.x, req.y, req.width, req.height, &req.png_bytes) {
+                    log::error!("Failed to render image: {}", e);
+                }
+            }
+            // Restore cursor position after image rendering moved it
+            use helix_view::graphics::CursorKind;
+            if let Some((x, y)) = pos {
+                let _ = self.terminal.set_cursor(x, y);
+            }
+            match kind {
+                CursorKind::Hidden => { let _ = self.terminal.hide_cursor(); }
+                kind => { let _ = self.terminal.show_cursor(kind); }
+            }
+            let _ = self.terminal.backend_mut().flush();
+        } else if self.terminal.graphics_protocol().is_some() {
+            // Clear images when: no pending images, or overlay is active
+            if let Err(e) = self.terminal.clear_images() {
+                log::error!("Failed to clear images: {}", e);
+            }
+        }
     }
 
     pub async fn event_loop<S>(&mut self, input_stream: &mut S)
