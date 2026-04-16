@@ -410,8 +410,6 @@ impl Prompt {
     }
 }
 
-const BASE_WIDTH: u16 = 30;
-
 impl Prompt {
     pub fn render_prompt(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let theme = &cx.editor.theme;
@@ -420,49 +418,40 @@ impl Prompt {
         let selected_color = theme.get("ui.menu.selected");
         let suggestion_color = theme.get("ui.text.inactive");
         let background = theme.get("ui.background");
-        // completion
+        // completion — single column command list (left) + help panel (right)
 
-        let max_len = self
-            .completion
-            .iter()
-            .map(|(_, completion)| completion.content.len() as u16)
-            .max()
-            .unwrap_or(BASE_WIDTH)
-            .max(BASE_WIDTH);
-
-        let cols = std::cmp::max(1, area.width / max_len);
-        let col_width = (area.width.saturating_sub(cols)) / cols;
+        let cmd_col_width: u16 = cx.editor.config().explorer.column_width as u16 + 1;
 
         let height = (self.completion.len() as u16)
-            .div_ceil(cols)
-            .min(10) // at most 10 rows (or less)
+            .min(10)
             .min(area.height.saturating_sub(1));
 
         let completion_area = Rect::new(
-            area.x,
+            0,
             (area.height - height).saturating_sub(1),
-            area.width,
+            cmd_col_width,
             height,
         );
 
         if completion_area.height > 0 && !self.completion.is_empty() {
-            let area = completion_area;
             let background = theme.get("ui.menu");
 
-            let items = height as usize * cols as usize;
+            let items = height as usize;
 
             let offset = self
                 .selection
                 .map(|selection| selection / items * items)
                 .unwrap_or_default();
 
-            surface.clear_with(area, background);
+            surface.clear_with(completion_area, background);
 
-            let mut row = 0;
-            let mut col = 0;
-
-            for (i, (_range, completion)) in
-                self.completion.iter().enumerate().skip(offset).take(items)
+            for (row, (i, (_range, completion))) in self
+                .completion
+                .iter()
+                .enumerate()
+                .skip(offset)
+                .take(items)
+                .enumerate()
             {
                 let is_selected = Some(i) == self.selection;
 
@@ -472,54 +461,58 @@ impl Prompt {
                     completion_color.patch(completion.style)
                 };
 
+                // Fill full row with background for selected item
+                if is_selected {
+                    let row_area = Rect::new(
+                        completion_area.x,
+                        completion_area.y + row as u16,
+                        completion_area.width,
+                        1,
+                    );
+                    surface.clear_with(row_area, selected_color);
+                }
+
                 surface.set_stringn(
-                    area.x + col * (1 + col_width),
-                    area.y + row,
+                    completion_area.x + 1,
+                    completion_area.y + row as u16,
                     &completion.content,
-                    col_width.saturating_sub(1) as usize,
+                    completion_area.width.saturating_sub(1) as usize,
                     completion_item_style,
                 );
+            }
 
-                row += 1;
-                if row > area.height - 1 {
-                    row = 0;
-                    col += 1;
+            // Help panel (right side of command list, starts after explorer border)
+            if let Some(doc) = (self.doc_fn)(&self.line) {
+                let mut text = ui::Text::new(doc.to_string());
+
+                let explorer_total = cx.editor.config().explorer.column_width as u16 + 2;
+                let doc_x = explorer_total;
+                let doc_max_width = (cmd_col_width * 2).min(area.width.saturating_sub(doc_x));
+                let horizontal_padding = 2; // border + margin
+                let vertical_padding = 1; // border only
+
+                if doc_max_width > horizontal_padding * 2 {
+                    let text_width = doc_max_width - horizontal_padding * 2;
+                    let (_width, text_height) =
+                        ui::text::required_size(&text.contents, text_width);
+
+                    let doc_area = Rect::new(
+                        doc_x,
+                        completion_area.y,
+                        doc_max_width,
+                        (text_height + vertical_padding * 2).min(completion_area.height),
+                    );
+
+                    let background = theme.get("ui.help");
+                    surface.clear_with(doc_area, background);
+
+                    let block = Block::bordered().border_style(background);
+                    let inner = block.inner(doc_area).inner(Margin::horizontal(1));
+
+                    block.render(doc_area, surface);
+                    text.render(inner, surface, cx);
                 }
             }
-        }
-
-        if let Some(doc) = (self.doc_fn)(&self.line) {
-            let mut text = ui::Text::new(doc.to_string());
-
-            let max_width = BASE_WIDTH * 3;
-            let horizontal_padding = 2; // border + margin
-            let vertical_padding = 1; // border only
-            let text_width = max_width - horizontal_padding * 2;
-
-            let viewport = area;
-
-            let (_width, height) = ui::text::required_size(&text.contents, text_width);
-
-            let area = viewport.intersection(Rect::new(
-                completion_area.x,
-                completion_area
-                    .y
-                    .saturating_sub(height + vertical_padding * 2),
-                max_width,
-                height + vertical_padding * 2,
-            ));
-
-            let background = theme.get("ui.help");
-            surface.clear_with(area, background);
-
-            let block = Block::bordered()
-                // .title(self.title.as_str())
-                .border_style(background);
-
-            let inner = block.inner(area).inner(Margin::horizontal(1));
-
-            block.render(area, surface);
-            text.render(inner, surface, cx);
         }
 
         let line = area.height - 1;
@@ -720,13 +713,29 @@ impl Component for Prompt {
                     return EventResult::Consumed(None);
                 }
             }
-            ctrl!('p') | key!(Up) => {
+            ctrl!('p') => {
                 if let Some(register) = self.history_register {
                     self.change_history(cx, register, CompletionDirection::Backward);
                 }
             }
-            ctrl!('n') | key!(Down) => {
+            ctrl!('n') => {
                 if let Some(register) = self.history_register {
+                    self.change_history(cx, register, CompletionDirection::Forward);
+                }
+            }
+            key!(Up) => {
+                if !self.completion.is_empty() {
+                    self.change_completion_selection(CompletionDirection::Backward);
+                    (self.callback_fn)(cx, &self.line, PromptEvent::Update);
+                } else if let Some(register) = self.history_register {
+                    self.change_history(cx, register, CompletionDirection::Backward);
+                }
+            }
+            key!(Down) => {
+                if !self.completion.is_empty() {
+                    self.change_completion_selection(CompletionDirection::Forward);
+                    (self.callback_fn)(cx, &self.line, PromptEvent::Update);
+                } else if let Some(register) = self.history_register {
                     self.change_history(cx, register, CompletionDirection::Forward);
                 }
             }
