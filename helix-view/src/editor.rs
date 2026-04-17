@@ -1255,6 +1255,7 @@ pub struct Editor {
     pub last_selection: Option<Selection>,
 
     pub status_msg: Option<(Cow<'static, str>, Severity)>,
+    pub notification_history: VecDeque<Notification>,
     pub autoinfo: Option<Info>,
 
     pub config: Arc<dyn DynAccess<Config>>,
@@ -1318,6 +1319,16 @@ pub struct PendingImageRender {
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
+
+/// Notification history entry.
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub message: Cow<'static, str>,
+    pub severity: Severity,
+    pub time_str: String,
+}
+
+const MAX_NOTIFICATION_HISTORY: usize = 100;
 
 #[derive(Debug)]
 pub enum EditorEvent {
@@ -1434,6 +1445,7 @@ impl Editor {
                 |config: &Config| &config.clipboard_provider,
             ))),
             status_msg: None,
+            notification_history: VecDeque::new(),
             autoinfo: None,
             idle_timer: Box::pin(sleep(conf.idle_timeout)),
             redraw_timer: Box::pin(sleep(Duration::MAX)),
@@ -1638,21 +1650,64 @@ impl Editor {
     pub fn set_status<T: Into<Cow<'static, str>>>(&mut self, status: T) {
         let status = status.into();
         log::debug!("editor status: {}", status);
-        self.status_msg = Some((status, Severity::Info));
+        self.status_msg = Some((status.clone(), Severity::Info));
+        self.push_notification(status, Severity::Info);
     }
 
     #[inline]
     pub fn set_error<T: Into<Cow<'static, str>>>(&mut self, error: T) {
         let error = error.into();
         log::debug!("editor error: {}", error);
-        self.status_msg = Some((error, Severity::Error));
+        self.status_msg = Some((error.clone(), Severity::Error));
+        self.push_notification(error, Severity::Error);
     }
 
     #[inline]
     pub fn set_warning<T: Into<Cow<'static, str>>>(&mut self, warning: T) {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
-        self.status_msg = Some((warning, Severity::Warning));
+        self.status_msg = Some((warning.clone(), Severity::Warning));
+        self.push_notification(warning, Severity::Warning);
+    }
+
+    pub fn push_notification(&mut self, message: Cow<'static, str>, severity: Severity) {
+        // Skip empty messages
+        if message.is_empty() {
+            return;
+        }
+        let time_str = Self::format_local_time();
+        let notification = Notification {
+            message,
+            severity,
+            time_str,
+        };
+        // Store in history
+        self.notification_history.push_back(notification.clone());
+        while self.notification_history.len() > MAX_NOTIFICATION_HISTORY {
+            self.notification_history.pop_front();
+        }
+        self.needs_redraw = true;
+    }
+
+    fn format_local_time() -> String {
+        use std::time::SystemTime;
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        #[cfg(unix)]
+        {
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            unsafe { libc::localtime_r(&secs, &mut tm) };
+            format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+        }
+        #[cfg(not(unix))]
+        {
+            // Fallback to UTC on non-unix
+            let hours = (secs / 3600) % 24;
+            let minutes = (secs / 60) % 60;
+            format!("{:02}:{:02}", hours, minutes)
+        }
     }
 
     #[inline]

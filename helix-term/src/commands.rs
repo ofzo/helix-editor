@@ -409,6 +409,7 @@ impl MappableCommand {
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
+        notification_picker, "Open notification history picker",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -4479,6 +4480,55 @@ fn jumplist_picker(cx: &mut Context) {
         let doc = &editor.documents.get(&meta.id)?;
         let line = meta.selection.primary().cursor_line(doc.text().slice(..));
         Some((meta.id.into(), Some((line, line))))
+    });
+    cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn notification_picker(cx: &mut Context) {
+    use helix_view::editor::Severity;
+
+    struct NotifItem {
+        time: String,
+        severity: Severity,
+        message: String,
+    }
+
+    let items: Vec<NotifItem> = cx
+        .editor
+        .notification_history
+        .iter()
+        .rev()
+        .take(10)
+        .map(|n| NotifItem {
+            time: n.time_str.clone(),
+            severity: n.severity,
+            message: n.message.to_string(),
+        })
+        .collect();
+
+    if items.is_empty() {
+        cx.editor.status_msg = Some(("No notifications".into(), Severity::Info));
+        return;
+    }
+
+    let columns = [
+        PickerColumn::new("time", |item: &NotifItem, _| item.time.as_str().into()),
+        PickerColumn::new("level", |item: &NotifItem, _| {
+            match item.severity {
+                Severity::Error => "ERROR".into(),
+                Severity::Warning => "WARN".into(),
+                _ => "INFO".into(),
+            }
+        }),
+        PickerColumn::new("message", |item: &NotifItem, _| item.message.as_str().into()),
+    ];
+
+    let picker = Picker::new(columns, 2, items, (), |cx, item, _action| {
+        if let Err(e) = cx.editor.registers.write('+', vec![item.message.clone()]) {
+            cx.editor.set_error(format!("Failed to copy: {}", e));
+        } else {
+            cx.editor.set_status("Notification copied to clipboard");
+        }
     });
     cx.push_layer(Box::new(overlaid(picker)));
 }

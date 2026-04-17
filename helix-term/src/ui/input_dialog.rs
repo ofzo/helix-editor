@@ -51,9 +51,7 @@ impl Component for InputDialog {
         if let Event::Key(key_event) = event {
             use helix_view::keyboard::KeyCode;
             if key_event.code == KeyCode::Enter {
-                if let Some((_, helix_view::editor::Severity::Error)) =
-                    &cx.editor.status_msg
-                {
+                if cx.editor.is_err() {
                     return EventResult::Consumed(None);
                 }
                 let close: crate::compositor::Callback =
