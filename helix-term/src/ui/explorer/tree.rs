@@ -486,7 +486,10 @@ impl<T: TreeViewItem> TreeView<T> {
     fn move_to_parent(&mut self) -> Result<()> {
         if let Some(parent) = self.current_parent()? {
             let index = parent.index;
-            self.set_selected(index)
+            // Don't move to the hidden root node (index 0)
+            if index > 0 {
+                self.set_selected(index)
+            }
         }
         Ok(())
     }
@@ -503,8 +506,7 @@ impl<T: TreeViewItem> TreeView<T> {
         if let Some(parent) = self.current_parent()? {
             let index = parent.index;
             if index == 0 {
-                // Already at root, just move there.
-                self.set_selected(0);
+                // Already at top level, do nothing.
                 return Ok(());
             }
             self.set_selected(index);
@@ -742,7 +744,8 @@ impl<T: TreeViewItem> TreeView<T> {
     }
 
     fn set_selected_without_history(&mut self, selected: usize) {
-        let selected = selected.clamp(0, self.tree.len().saturating_sub(1));
+        // Clamp to [1, len-1]: index 0 is the hidden root node, never select it
+        let selected = selected.clamp(1, self.tree.len().saturating_sub(1).max(1));
         if selected > self.selected {
             // Move down
             self.winline = selected.min(
