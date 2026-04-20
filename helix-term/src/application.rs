@@ -721,6 +721,86 @@ impl Application {
         }
     }
 
+    fn handle_file_changed(&mut self, path: std::path::PathBuf) {
+        let scrolloff = self.editor.config().scrolloff;
+
+        // Signal the file explorer to refresh its tree
+        self.editor.explorer_needs_refresh = true;
+
+        // Find all documents matching this path
+        let doc_ids: Vec<_> = self
+            .editor
+            .documents()
+            .filter_map(|doc| {
+                doc.path()
+                    .and_then(|p| {
+                        let p = helix_stdx::path::canonicalize(p);
+                        if p == path { Some(doc.id()) } else { None }
+                    })
+            })
+            .collect();
+
+        for doc_id in doc_ids {
+            let doc = match self.editor.documents.get(&doc_id) {
+                Some(doc) => doc,
+                None => continue,
+            };
+
+            let display_name = doc.display_name().to_string();
+
+            if doc.is_modified() {
+                self.editor.set_status(format!(
+                    "File changed on disk: {} (buffer has unsaved changes)",
+                    display_name
+                ));
+                continue;
+            }
+
+            // Find a view displaying this document for the reload call
+            let view_id = self
+                .editor
+                .tree
+                .views()
+                .find(|(view, _)| view.doc == doc_id)
+                .map(|(view, _)| view.id);
+
+            let view_id = match view_id {
+                Some(id) => id,
+                None => {
+                    // Use any view if the document isn't visible
+                    match self.editor.tree.views().next() {
+                        Some((view, _)) => view.id,
+                        None => continue,
+                    }
+                }
+            };
+
+            let diff_providers = self.editor.diff_providers.clone();
+            let doc = self.editor.documents.get_mut(&doc_id).unwrap();
+            let view = self.editor.tree.get_mut(view_id);
+
+            match doc.reload(view, &diff_providers) {
+                Ok(_) => {
+                    view.ensure_cursor_in_view(doc, scrolloff);
+
+                    // Notify LSP about the file change
+                    if let Some(path) = doc.path() {
+                        self.editor
+                            .language_servers
+                            .file_event_handler
+                            .file_changed(path.clone());
+                    }
+
+                    self.editor
+                        .set_status(format!("Reloaded: {}", display_name));
+                }
+                Err(e) => {
+                    log::error!("failed to reload {}: {}", display_name, e);
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     pub async fn handle_editor_event(&mut self, event: EditorEvent) -> bool {
         log::debug!("received editor event: {:?}", event);
@@ -742,6 +822,10 @@ impl Application {
             EditorEvent::DebuggerEvent(event) => {
                 self.handle_debugger_event(event).await;
                 helix_event::request_redraw();
+            }
+            EditorEvent::FileChanged(path) => {
+                self.handle_file_changed(path);
+                self.render().await;
             }
             EditorEvent::AnimationFrame => {
                 self.editor.tick_animations();

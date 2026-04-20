@@ -485,6 +485,10 @@ pub struct Config {
     /// Command configuration.
     #[serde(default)]
     pub command: CommandConfig,
+    /// Automatically reload files from disk when they change externally.
+    /// Only reloads if the buffer has no unsaved modifications.
+    /// Defaults to false.
+    pub auto_reload: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1201,6 +1205,7 @@ impl Default for Config {
             buffer_picker: BufferPickerConfig::default(),
             insecure: false,
             command: CommandConfig::default(),
+            auto_reload: false,
         }
     }
 }
@@ -1300,6 +1305,9 @@ pub struct Editor {
     /// Breakpoints stored per file path.
     pub breakpoints: crate::debug::BreakpointStore,
 
+    /// File watcher for auto-reloading buffers when files change on disk.
+    pub file_watcher: Option<crate::file_watcher::FileWatcher>,
+
     /// Pending image render requests, consumed after terminal.draw().
     pub pending_image_renders: Vec<PendingImageRender>,
     /// Whether the terminal supports a graphics protocol (set during init).
@@ -1336,6 +1344,7 @@ pub enum EditorEvent {
     ConfigEvent(ConfigEvent),
     LanguageServerMessage((LanguageServerId, Call)),
     DebuggerEvent(helix_dap::transport::AdapterMessage),
+    FileChanged(PathBuf),
     IdleTimer,
     Redraw,
     AnimationFrame,
@@ -1466,6 +1475,23 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             debug_session: crate::debug::DebugSession::default(),
             breakpoints: crate::debug::BreakpointStore::new(),
+            file_watcher: if conf.auto_reload {
+                match crate::file_watcher::FileWatcher::new() {
+                    Ok(mut watcher) => {
+                        // Watch CWD recursively for file explorer tree
+                        if let Ok(cwd) = std::env::current_dir() {
+                            let _ = watcher.watch_recursive(&cwd);
+                        }
+                        Some(watcher)
+                    }
+                    Err(e) => {
+                        log::error!("failed to create file watcher: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            },
             pending_image_renders: Vec::new(),
             has_graphics_protocol: false,
             cell_pixel_size: (8, 16),
@@ -1510,6 +1536,33 @@ impl Editor {
         let config = self.config();
         self.auto_pairs = (&config.auto_pairs).into();
         self.reset_idle_timer();
+
+        // Handle auto_reload toggle
+        if config.auto_reload != old_config.auto_reload {
+            if config.auto_reload {
+                match crate::file_watcher::FileWatcher::new() {
+                    Ok(mut watcher) => {
+                        // Watch CWD recursively for file explorer tree
+                        if let Ok(cwd) = std::env::current_dir() {
+                            let _ = watcher.watch_recursive(&cwd);
+                        }
+                        // Watch all currently open document paths
+                        for doc in self.documents.values() {
+                            if let Some(path) = doc.path() {
+                                let _ = watcher.watch(path);
+                            }
+                        }
+                        self.file_watcher = Some(watcher);
+                    }
+                    Err(e) => {
+                        log::error!("failed to create file watcher: {}", e);
+                    }
+                }
+            } else {
+                self.file_watcher = None;
+            }
+        }
+
         self._refresh();
         helix_event::dispatch(crate::events::ConfigDidChange {
             editor: self,
@@ -2194,6 +2247,13 @@ impl Editor {
             let id = self.new_document(doc);
             self.launch_language_servers(id);
 
+            // Watch the file for external changes if auto_reload is enabled
+            if let Some(watcher) = self.file_watcher.as_mut() {
+                if let Err(e) = watcher.watch(&path) {
+                    log::warn!("failed to watch file {:?}: {}", path, e);
+                }
+            }
+
             helix_event::dispatch(DocumentDidOpen {
                 editor: self,
                 doc: id,
@@ -2223,6 +2283,13 @@ impl Editor {
         };
         if !force && doc.is_modified() {
             return Err(CloseError::BufferModified(doc.display_name().into_owned()));
+        }
+
+        // Unwatch the file if auto_reload is enabled
+        if let Some(watcher) = self.file_watcher.as_mut() {
+            if let Some(path) = doc.path() {
+                let _ = watcher.unwatch(path);
+            }
         }
 
         // This will also disallow any follow-up writes
@@ -2547,6 +2614,14 @@ impl Editor {
                     }
                 } => {
                     return EditorEvent::DebuggerEvent(msg)
+                }
+                Some(path) = async {
+                    match self.file_watcher.as_mut() {
+                        Some(watcher) => watcher.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    return EditorEvent::FileChanged(path)
                 }
                 _ = helix_event::redraw_requested() => {
                     if  !self.needs_redraw{
