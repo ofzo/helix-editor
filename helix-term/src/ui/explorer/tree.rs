@@ -216,7 +216,7 @@ impl<T> Tree<T> {
         }
     }
 
-    fn iter(&self) -> TreeIter<T> {
+    fn iter(&self) -> TreeIter<'_, T> {
         TreeIter {
             tree: self,
             current_index_forward: 0,
