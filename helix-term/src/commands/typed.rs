@@ -5102,7 +5102,8 @@ pub(super) fn command_mode(cx: &mut Context) {
                 cx.editor.set_error(err.to_string());
             }
         },
-    );
+    )
+    .with_status(true);
     prompt.doc_fn = Box::new(command_line_doc);
 
     // Calculate initial completion

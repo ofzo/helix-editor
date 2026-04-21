@@ -53,6 +53,21 @@ pub struct RenderBuffer<'a> {
 }
 
 pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
+    render_internal(context, viewport, surface, false);
+}
+
+/// Render statusline without the mode element (for combined statusline + command line).
+/// The mode is rendered separately by the caller.
+pub fn render_without_mode(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
+    render_internal(context, viewport, surface, true);
+}
+
+fn render_internal(
+    context: &mut RenderContext,
+    viewport: Rect,
+    surface: &mut Surface,
+    skip_mode: bool,
+) {
     let base_style = if context.focused {
         context.editor.theme.get("ui.statusline")
     } else {
@@ -66,6 +81,10 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     let config = context.editor.config();
 
     for element_id in &config.statusline.left {
+        // Skip mode element if requested (for combined line where mode is rendered separately)
+        if skip_mode && *element_id == helix_view::editor::StatusLineElement::Mode {
+            continue;
+        }
         let render = get_render_function(*element_id);
         (render)(context, |context, span| {
             append(&mut context.parts.left, span, base_style)

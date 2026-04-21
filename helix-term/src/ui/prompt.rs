@@ -48,6 +48,10 @@ pub struct Prompt {
     next_char_handler: Option<PromptCharHandler>,
     language: Option<(&'static str, Arc<ArcSwap<syntax::Loader>>)>,
     auto_close: bool,
+    /// Error message to display in the status line
+    error: Option<String>,
+    /// Whether to show status indicator (CMD/ERR) - used for command line
+    show_status: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,7 +109,25 @@ impl Prompt {
             next_char_handler: None,
             language: None,
             auto_close: true,
+            error: None,
+            show_status: false,
         }
+    }
+
+    /// Set whether to show status indicator
+    pub fn with_status(mut self, show: bool) -> Self {
+        self.show_status = show;
+        self
+    }
+
+    /// Set an error message to display in the status line
+    pub fn set_error(&mut self, error: String) {
+        self.error = Some(error);
+    }
+
+    /// Clear the error message
+    pub fn clear_error(&mut self) {
+        self.error = None;
     }
 
     /// When set to `false`, the prompt will not close after Enter (Validate).
@@ -411,6 +433,67 @@ impl Prompt {
 }
 
 impl Prompt {
+    /// Render mode/status indicator on the left side of the prompt line with powerline style.
+    /// Shows CMD normally, or ERR message when there's an error.
+    /// Returns the width of the rendered indicator.
+    fn render_status_indicator(
+        &self,
+        area: Rect,
+        surface: &mut Surface,
+        cx: &mut Context,
+    ) -> u16 {
+        use helix_core::unicode::width::UnicodeWidthStr;
+
+        let line = area.height - 1;
+        let base_style = cx.editor.theme.get("ui.statusline");
+
+        if let Some(ref error) = self.error {
+            // Show error indicator with message (powerline style)
+            let error_style = cx.editor.theme.get("error");
+            let cap_style = helix_view::graphics::Style::default()
+                .fg(error_style.bg.unwrap_or(helix_view::graphics::Color::Red))
+                .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
+
+            let left_cap = "\u{E0B6}";
+            let err_text = format!(" ERR: {} ", error);
+            let right_cap = "\u{E0B4}";
+
+            let mut x = area.x;
+            surface.set_string(x, area.y + line, left_cap, cap_style);
+            x += left_cap.width() as u16;
+            surface.set_string(x, area.y + line, &err_text, error_style);
+            x += err_text.width() as u16;
+            surface.set_string(x, area.y + line, right_cap, cap_style);
+            x += right_cap.width() as u16;
+            // Add a space after the powerline indicator
+            x += 1;
+
+            x - area.x
+        } else {
+            // Show CMD indicator (powerline style)
+            let cmd_style = cx.editor.theme.get("ui.statusline.insert");
+            let cap_style = helix_view::graphics::Style::default()
+                .fg(cmd_style.bg.unwrap_or(helix_view::graphics::Color::Blue))
+                .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
+
+            let left_cap = "\u{E0B6}";
+            let cmd_text = " CMD ";
+            let right_cap = "\u{E0B4}";
+
+            let mut x = area.x;
+            surface.set_string(x, area.y + line, left_cap, cap_style);
+            x += left_cap.width() as u16;
+            surface.set_string(x, area.y + line, cmd_text, cmd_style);
+            x += cmd_text.width() as u16;
+            surface.set_string(x, area.y + line, right_cap, cap_style);
+            x += right_cap.width() as u16;
+            // Add a space after the powerline indicator
+            x += 1;
+
+            x - area.x
+        }
+    }
+
     pub fn render_prompt(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let theme = &cx.editor.theme;
         let prompt_color = theme.get("ui.text");
@@ -517,11 +600,19 @@ impl Prompt {
 
         let line = area.height - 1;
         surface.clear_with(area.clip_top(line), background);
-        // render buffer text
-        surface.set_string(area.x, area.y + line, &self.prompt, prompt_color);
+
+        // Render status indicator on the left ([CMD] or [ERR]) only for command line
+        let status_width = if self.show_status {
+            self.render_status_indicator(area, surface, cx)
+        } else {
+            0
+        };
+
+        // render buffer text after status indicator
+        let prompt_x = area.x + status_width;
 
         self.line_area = area
-            .clip_left(self.prompt.len() as u16)
+            .clip_left(status_width)
             .clip_top(line)
             .clip_right(2);
 
@@ -791,8 +882,21 @@ impl Component for Prompt {
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        // Calculate status width (same logic as render_status_indicator with powerline style)
+        // Powerline format: "" + " CMD " + "" + " " or "" + " ERR: {} " + "" + " "
+        let status_width: u16 = if self.show_status {
+            if let Some(ref error) = self.error {
+                let text = format!(" ERR: {} ", error);
+                ("\u{E0B6}".width() + text.width() + "\u{E0B4}".width() + 1) as u16
+            } else {
+                ("\u{E0B6}".width() + " CMD ".width() + "\u{E0B4}".width() + 1) as u16
+            }
+        } else {
+            0
+        };
+
         let area = area
-            .clip_left(self.prompt.len() as u16)
+            .clip_left(status_width)
             .clip_right(if self.prompt.is_empty() { 2 } else { 0 });
 
         let mut col = area.left() as usize + self.line[self.anchor..self.cursor].width();

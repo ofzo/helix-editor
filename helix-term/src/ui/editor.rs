@@ -20,7 +20,6 @@ use helix_core::{
     movement::Direction,
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
-    unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection, Transaction,
 };
 use helix_view::{
@@ -621,6 +620,63 @@ impl EditorView {
         }
 
         EventResult::Consumed(None)
+    }
+
+    /// Render mode indicator on the left side of the bottom line with powerline style.
+    /// Returns the width of the rendered mode indicator.
+    fn render_mode_indicator(
+        editor: &Editor,
+        area: Rect,
+        surface: &mut Surface,
+    ) -> u16 {
+        use helix_core::unicode::width::UnicodeWidthStr;
+        use helix_view::document::Mode;
+
+        let config = editor.config();
+        let modenames = &config.statusline.mode;
+        let mode_str = match editor.mode() {
+            Mode::Insert => &modenames.insert,
+            Mode::Select => &modenames.select,
+            Mode::Normal => &modenames.normal,
+        };
+
+        let visible = true; // Always visible in the combined line
+        let mode_style = if visible && config.color_modes {
+            match editor.mode() {
+                Mode::Insert => editor.theme.get("ui.statusline.insert"),
+                Mode::Select => editor.theme.get("ui.statusline.select"),
+                Mode::Normal => editor.theme.get("ui.statusline.normal"),
+            }
+        } else {
+            editor.theme.get("ui.statusline")
+        };
+
+        let base_style = editor.theme.get("ui.statusline");
+
+        if visible && config.color_modes {
+            // Powerline style: left half-circle + mode text + right half-circle
+            let cap_style = helix_view::graphics::Style::default()
+                .fg(mode_style.bg.unwrap_or(helix_view::graphics::Color::Reset))
+                .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
+
+            let left_cap = "\u{E0B6}";
+            let mode_text = format!(" {} ", mode_str);
+            let right_cap = "\u{E0B4}";
+
+            let mut x = area.x;
+            surface.set_string(x, area.y, left_cap, cap_style);
+            x += left_cap.width() as u16;
+            surface.set_string(x, area.y, &mode_text, mode_style);
+            x += mode_text.width() as u16;
+            surface.set_string(x, area.y, right_cap, cap_style);
+            x += right_cap.width() as u16;
+
+            x - area.x
+        } else {
+            let content = format!(" {} ", mode_str);
+            surface.set_string(area.x, area.y, &content, mode_style);
+            content.width() as u16
+        }
     }
 
     pub fn render_view(
@@ -2458,7 +2514,7 @@ impl Component for EditorView {
         surface.set_style(area, cx.editor.theme.get("ui.background"));
         let config = cx.editor.config();
 
-        let editor_area = area.clip_bottom(2); // 1 for command line + 1 for global statusline
+        let editor_area = area.clip_bottom(1); // 1 for combined statusline + command line
 
         // check if bufferline should be rendered
         use helix_view::editor::BufferLine;
@@ -2519,9 +2575,9 @@ impl Component for EditorView {
             if !explorer.is_focus() {
                 explorer.sync_with_current_doc(cx.editor);
                 let explorer_area = if use_bufferline {
-                    area.clip_top(1).clip_bottom(2)
+                    area.clip_top(1).clip_bottom(1)
                 } else {
-                    area.clip_bottom(2)
+                    area.clip_bottom(1)
                 };
                 explorer.render(explorer_area, surface, cx);
             }
@@ -2580,44 +2636,36 @@ impl Component for EditorView {
             }
         }
 
-        // Render a full-width statusline just above the command line
+        // Render combined statusline + command line at the bottom
+        // When prompt is active, it will render over this area
+        // When prompt is inactive, we show mode + statusline content
         {
             let (view, _) = cx.editor.tree.views().find(|(_, f)| *f).unwrap();
             let doc = cx.editor.document(view.doc).unwrap();
-            let statusline_area = Rect::new(
+            let bottom_area = Rect::new(
                 area.x,
-                area.y + area.height.saturating_sub(2),
+                area.y + area.height.saturating_sub(1),
                 area.width,
+                1,
+            );
+
+            // Always render mode on the left
+            let mode_width = Self::render_mode_indicator(cx.editor, bottom_area, surface);
+
+            // Render statusline content to the right of mode
+            let statusline_area = Rect::new(
+                area.x + mode_width,
+                bottom_area.y,
+                bottom_area.width.saturating_sub(mode_width),
                 1,
             );
 
             let mut context =
                 statusline::RenderContext::new(cx.editor, doc, view, true, &self.spinners);
-            statusline::render(&mut context, statusline_area, surface);
-        }
+            statusline::render_without_mode(&mut context, statusline_area, surface);
 
-        let key_width = 15u16; // for showing pending keys
-        let mut status_msg_width = 0;
-
-        // render status msg
-        if let Some((status_msg, severity)) = &cx.editor.status_msg {
-            status_msg_width = status_msg.width();
-            use helix_view::editor::Severity;
-            let style = if *severity == Severity::Error {
-                cx.editor.theme.get("error")
-            } else {
-                cx.editor.theme.get("ui.text")
-            };
-
-            surface.set_string(
-                area.x,
-                area.y + area.height.saturating_sub(1),
-                status_msg,
-                style,
-            );
-        }
-
-        if area.width.saturating_sub(status_msg_width as u16) > key_width {
+            // Render pending keys and macro recording on the right side
+            let key_width = 15u16;
             let mut disp = String::new();
             if let Some(count) = cx.editor.count {
                 disp.push_str(&count.to_string())
@@ -2628,30 +2676,29 @@ impl Component for EditorView {
             for key in &self.pseudo_pending {
                 disp.push_str(&key.key_sequence_format());
             }
-            let style = cx.editor.theme.get("ui.text");
-            let macro_width = if cx.editor.macro_recording.is_some() {
-                3
-            } else {
-                0
-            };
-            surface.set_string(
-                area.x + area.width.saturating_sub(key_width + macro_width),
-                area.y + area.height.saturating_sub(1),
-                disp.get(disp.len().saturating_sub(key_width as usize)..)
-                    .unwrap_or(&disp),
-                style,
-            );
-            if let Some((reg, _)) = cx.editor.macro_recording {
-                let disp = format!("[{}]", reg);
-                let style = style
-                    .fg(helix_view::graphics::Color::Yellow)
-                    .add_modifier(Modifier::BOLD);
+            if !disp.is_empty() || cx.editor.macro_recording.is_some() {
+                let style = cx.editor.theme.get("ui.text");
+                let macro_width = if cx.editor.macro_recording.is_some() { 3 } else { 0 };
+                let x = area.x + area.width.saturating_sub(key_width + macro_width);
                 surface.set_string(
-                    area.x + area.width.saturating_sub(3),
-                    area.y + area.height.saturating_sub(1),
-                    &disp,
+                    x,
+                    bottom_area.y,
+                    disp.get(disp.len().saturating_sub(key_width as usize)..)
+                        .unwrap_or(&disp),
                     style,
                 );
+                if let Some((reg, _)) = cx.editor.macro_recording {
+                    let disp = format!("[{}]", reg);
+                    let style = style
+                        .fg(helix_view::graphics::Color::Yellow)
+                        .add_modifier(Modifier::BOLD);
+                    surface.set_string(
+                        area.x + area.width.saturating_sub(3),
+                        bottom_area.y,
+                        &disp,
+                        style,
+                    );
+                }
             }
         }
 
@@ -2681,9 +2728,9 @@ impl Component for EditorView {
         if let Some(explore) = self.explorer.as_mut() {
             if explore.is_focus() {
                 let explorer_area = if use_bufferline {
-                    area.clip_top(1).clip_bottom(2)
+                    area.clip_top(1).clip_bottom(1)
                 } else {
-                    area.clip_bottom(2)
+                    area.clip_bottom(1)
                 };
                 explore.render(explorer_area, surface, cx);
             }
