@@ -20,6 +20,7 @@ use helix_core::{
     movement::Direction,
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
+    unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection, Transaction,
 };
 use helix_view::{
@@ -2388,6 +2389,29 @@ impl Component for EditorView {
                 // clear status
                 cx.editor.status_msg = None;
 
+                // Handle Shift+Up/Down for autoinfo scrolling
+                if let Some(mut info) = cx.editor.autoinfo.take() {
+                    use helix_view::keyboard::{KeyCode, KeyModifiers};
+                    let mut consumed = false;
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        match key.code {
+                            KeyCode::Up => {
+                                info.scroll_up();
+                                consumed = true;
+                            }
+                            KeyCode::Down => {
+                                info.scroll_down();
+                                consumed = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    cx.editor.autoinfo = Some(info);
+                    if consumed {
+                        return EventResult::Consumed(None);
+                    }
+                }
+
                 let mode = cx.editor.mode();
 
                 if !self.on_next_key(OnKeyCallbackKind::PseudoPending, &mut cx, key) {
@@ -2662,42 +2686,66 @@ impl Component for EditorView {
 
             let mut context =
                 statusline::RenderContext::new(cx.editor, doc, view, true, &self.spinners);
-            statusline::render_without_mode(&mut context, statusline_area, surface);
 
-            // Render pending keys and macro recording on the right side
-            let key_width = 15u16;
-            let mut disp = String::new();
-            if let Some(count) = cx.editor.count {
-                disp.push_str(&count.to_string())
-            }
-            for key in self.keymaps.pending() {
-                disp.push_str(&key.key_sequence_format());
-            }
-            for key in &self.pseudo_pending {
-                disp.push_str(&key.key_sequence_format());
-            }
-            if !disp.is_empty() || cx.editor.macro_recording.is_some() {
-                let style = cx.editor.theme.get("ui.text");
-                let macro_width = if cx.editor.macro_recording.is_some() { 3 } else { 0 };
-                let x = area.x + area.width.saturating_sub(key_width + macro_width);
-                surface.set_string(
-                    x,
-                    bottom_area.y,
-                    disp.get(disp.len().saturating_sub(key_width as usize)..)
-                        .unwrap_or(&disp),
-                    style,
-                );
-                if let Some((reg, _)) = cx.editor.macro_recording {
-                    let disp = format!("[{}]", reg);
-                    let style = style
-                        .fg(helix_view::graphics::Color::Yellow)
-                        .add_modifier(Modifier::BOLD);
+            // Render pending keys / autoinfo title / macro recording on the right side
+            if let Some(ref info) = cx.editor.autoinfo {
+                // Render statusline without right side (we'll show autoinfo title there)
+                statusline::render_without_mode_and_right(&mut context, statusline_area, surface);
+                // Show autoinfo title with powerline style on the right
+                // Use normal mode statusline color
+                let title = format!(" {} ", info.title);
+                let title_width = title.width() as u16;
+                let base_style = cx.editor.theme.get("ui.statusline");
+                let mode_style = cx.editor.theme.get("ui.statusline.normal");
+                // Cap style: fg = mode bg, bg = base bg (for proper powerline rendering)
+                let cap_style = helix_view::graphics::Style::default()
+                    .fg(mode_style.bg.unwrap_or(helix_view::graphics::Color::Reset))
+                    .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
+                // Right-align: 1 space +  + title + 
+                let total_width = 1 + 1 + title_width + 1;
+                let x = area.x + area.width.saturating_sub(total_width);
+                surface.set_string(x, bottom_area.y, " ", base_style);
+                surface.set_string(x + 1, bottom_area.y, "\u{e0b6}", cap_style);
+                surface.set_string(x + 2, bottom_area.y, &title, mode_style);
+                surface.set_string(x + 2 + title_width, bottom_area.y, "\u{e0b4}", cap_style);
+            } else {
+                // Render full statusline (with right side)
+                statusline::render_without_mode(&mut context, statusline_area, surface);
+                // Render pending keys and macro recording on the right side
+                let key_width = 15u16;
+                let mut disp = String::new();
+                if let Some(count) = cx.editor.count {
+                    disp.push_str(&count.to_string())
+                }
+                for key in self.keymaps.pending() {
+                    disp.push_str(&key.key_sequence_format());
+                }
+                for key in &self.pseudo_pending {
+                    disp.push_str(&key.key_sequence_format());
+                }
+                if !disp.is_empty() || cx.editor.macro_recording.is_some() {
+                    let style = cx.editor.theme.get("ui.text");
+                    let macro_width = if cx.editor.macro_recording.is_some() { 3 } else { 0 };
+                    let x = area.x + area.width.saturating_sub(key_width + macro_width);
                     surface.set_string(
-                        area.x + area.width.saturating_sub(3),
+                        x,
                         bottom_area.y,
-                        &disp,
+                        disp.get(disp.len().saturating_sub(key_width as usize)..)
+                            .unwrap_or(&disp),
                         style,
                     );
+                    if let Some((reg, _)) = cx.editor.macro_recording {
+                        let disp = format!("[{}]", reg);
+                        let style = style
+                            .fg(helix_view::graphics::Color::Yellow)
+                            .add_modifier(Modifier::BOLD);
+                        surface.set_string(
+                            area.x + area.width.saturating_sub(3),
+                            bottom_area.y,
+                            &disp,
+                            style,
+                        );
+                    }
                 }
             }
         }

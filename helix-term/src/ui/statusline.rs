@@ -53,13 +53,19 @@ pub struct RenderBuffer<'a> {
 }
 
 pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
-    render_internal(context, viewport, surface, false);
+    render_internal(context, viewport, surface, false, false);
 }
 
 /// Render statusline without the mode element (for combined statusline + command line).
 /// The mode is rendered separately by the caller.
 pub fn render_without_mode(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
-    render_internal(context, viewport, surface, true);
+    render_internal(context, viewport, surface, true, false);
+}
+
+/// Render statusline without the mode element and without the right side.
+/// Used when autoinfo is displayed and we want to show the title on the right instead.
+pub fn render_without_mode_and_right(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
+    render_internal(context, viewport, surface, true, true);
 }
 
 fn render_internal(
@@ -67,6 +73,7 @@ fn render_internal(
     viewport: Rect,
     surface: &mut Surface,
     skip_mode: bool,
+    skip_right: bool,
 ) {
     let base_style = if context.focused {
         context.editor.theme.get("ui.statusline")
@@ -99,23 +106,24 @@ fn render_internal(
     );
 
     // Right side of the status line.
+    if !skip_right {
+        for element_id in &config.statusline.right {
+            let render = get_render_function(*element_id);
+            (render)(context, |context, span| {
+                append(&mut context.parts.right, span, base_style)
+            })
+        }
 
-    for element_id in &config.statusline.right {
-        let render = get_render_function(*element_id);
-        (render)(context, |context, span| {
-            append(&mut context.parts.right, span, base_style)
-        })
+        surface.set_spans(
+            viewport.x
+                + viewport
+                    .width
+                    .saturating_sub(context.parts.right.width() as u16),
+            viewport.y,
+            &context.parts.right,
+            context.parts.right.width() as u16,
+        );
     }
-
-    surface.set_spans(
-        viewport.x
-            + viewport
-                .width
-                .saturating_sub(context.parts.right.width() as u16),
-        viewport.y,
-        &context.parts.right,
-        context.parts.right.width() as u16,
-    );
 
     // Center of the status line.
 
