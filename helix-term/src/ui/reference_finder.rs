@@ -24,7 +24,6 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 use tui::{
     buffer::Buffer as Surface,

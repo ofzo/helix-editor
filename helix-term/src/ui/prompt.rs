@@ -609,8 +609,6 @@ impl Prompt {
         };
 
         // render buffer text after status indicator
-        let prompt_x = area.x + status_width;
-
         self.line_area = area
             .clip_left(status_width)
             .clip_top(line)

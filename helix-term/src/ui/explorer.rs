@@ -801,40 +801,6 @@ impl Explorer {
         })
     }
 
-    fn open_split(item: &mut FileInfo, cx: &mut Context, state: &mut State) -> TreeOp {
-        (|| -> Result<TreeOp> {
-            if item.path == Path::new("") {
-                return Ok(TreeOp::Noop);
-            }
-
-            if matches!(item.file_type, FileType::Archive | FileType::ArchiveDir) {
-                return Ok(TreeOp::GetChildsAndInsert);
-            }
-            if item.file_type == FileType::ArchiveFile {
-                Self::open_archive_entry(item, cx, Action::VerticalSplit)?;
-                state.focus = false;
-                return Ok(TreeOp::Noop);
-            }
-
-            let meta = std::fs::metadata(&item.path)?;
-            if meta.is_file() {
-                cx.editor.open(&item.path, Action::VerticalSplit)?;
-                state.focus = false;
-                return Ok(TreeOp::Noop);
-            }
-
-            if item.path.is_dir() {
-                return Ok(TreeOp::GetChildsAndInsert);
-            }
-
-            Err(anyhow::anyhow!("Unknown file type: {:?}", meta.file_type()))
-        })()
-        .unwrap_or_else(|err| {
-            cx.editor.set_error(format!("{err}"));
-            TreeOp::Noop
-        })
-    }
-
     fn open_archive_entry(item: &FileInfo, cx: &mut Context, action: Action) -> Result<()> {
         let ctx = item
             .archive_context

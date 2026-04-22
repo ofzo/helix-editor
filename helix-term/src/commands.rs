@@ -198,7 +198,7 @@ where
     })
 }
 
-use helix_view::{align_view, Align};
+use helix_view::Align;
 
 /// MappableCommands are commands that can be bound to keys, executable in
 /// normal, insert or select mode.

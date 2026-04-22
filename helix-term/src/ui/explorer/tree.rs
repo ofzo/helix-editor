@@ -626,37 +626,6 @@ impl<T: TreeViewItem> TreeView<T> {
     }
 }
 
-pub fn tree_view_help() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("o, Enter", "Open/Close"),
-        ("j, down, C-n", "Down"),
-        ("k, up, C-p", "Up"),
-        ("h, left", "Go to parent"),
-        ("l, right", "Expand"),
-        ("J", "Go to next sibling"),
-        ("K", "Go to previous sibling"),
-        ("H", "Go to first child"),
-        ("L", "Go to last child"),
-        ("R", "Refresh"),
-        ("/", "Search"),
-        ("n", "Go to next search match"),
-        ("N", "Go to previous search match"),
-        ("gh, Home", "Scroll to the leftmost"),
-        ("gl, End", "Scroll to the rightmost"),
-        ("C-o", "Jump backward"),
-        ("C-i, Tab", "Jump forward"),
-        ("C-d", "Half page down"),
-        ("C-u", "Half page up"),
-        ("PageDown", "Full page down"),
-        ("PageUp", "Full page up"),
-        ("zt", "Align view top"),
-        ("zz", "Align view center"),
-        ("zb", "Align view bottom"),
-        ("gg", "Go to first line"),
-        ("ge", "Go to last line"),
-    ]
-}
-
 impl<T: TreeViewItem> TreeView<T> {
     pub fn on_enter(
         &mut self,
@@ -1096,17 +1065,6 @@ fn render_tree<'a, T: TreeViewItem>(
 }
 
 impl<T: TreeViewItem + Clone> TreeView<T> {
-    pub fn render(
-        &mut self,
-        area: Rect,
-        prompt_area: Rect,
-        surface: &mut Surface,
-        cx: &mut Context,
-    ) {
-        let empty = HashMap::new();
-        self.render_with_git_status(area, prompt_area, surface, cx, &empty, None);
-    }
-
     pub fn render_with_git_status(
         &mut self,
         area: Rect,

@@ -52,9 +52,6 @@ pub struct RenderBuffer<'a> {
     pub right: Spans<'a>,
 }
 
-pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
-    render_internal(context, viewport, surface, false, false);
-}
 
 /// Render statusline without the mode element (for combined statusline + command line).
 /// The mode is rendered separately by the caller.
