@@ -120,6 +120,7 @@ pub fn raw_regex_prompt(
     let offset_snapshot = doc.view_offset(view.id);
     let config = cx.editor.config();
 
+    let label = prompt.trim_end_matches(':').to_uppercase();
     let mut prompt = Prompt::new(
         prompt,
         history_register,
@@ -198,7 +199,8 @@ pub fn raw_regex_prompt(
             }
         },
     )
-    .with_language("regex", std::sync::Arc::clone(&cx.editor.syn_loader));
+    .with_language("regex", std::sync::Arc::clone(&cx.editor.syn_loader))
+    .with_status_label(label);
     // Calculate initial completion
     prompt.recalculate_completion(cx.editor);
     // prompt

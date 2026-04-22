@@ -52,6 +52,8 @@ pub struct Prompt {
     error: Option<String>,
     /// Whether to show status indicator (CMD/ERR) - used for command line
     show_status: bool,
+    /// Custom label for the status indicator (e.g., "SEARCH"); defaults to "CMD"
+    status_label: Option<Cow<'static, str>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,12 +113,20 @@ impl Prompt {
             auto_close: true,
             error: None,
             show_status: false,
+            status_label: None,
         }
     }
 
     /// Set whether to show status indicator
     pub fn with_status(mut self, show: bool) -> Self {
         self.show_status = show;
+        self
+    }
+
+    /// Set a custom label for the status indicator (e.g., "SEARCH")
+    pub fn with_status_label(mut self, label: impl Into<Cow<'static, str>>) -> Self {
+        self.show_status = true;
+        self.status_label = Some(label.into());
         self
     }
 
@@ -470,20 +480,26 @@ impl Prompt {
 
             x - area.x
         } else {
-            // Show CMD indicator (powerline style)
-            let cmd_style = cx.editor.theme.get("ui.statusline.insert");
+            let cmd_text = match &self.status_label {
+                Some(label) => format!(" {} ", label),
+                None => " CMD ".to_string(),
+            };
+            let cmd_style = if self.status_label.is_some() {
+                cx.editor.theme.get("ui.statusline.normal")
+            } else {
+                cx.editor.theme.get("ui.statusline.insert")
+            };
             let cap_style = helix_view::graphics::Style::default()
                 .fg(cmd_style.bg.unwrap_or(helix_view::graphics::Color::Blue))
                 .bg(base_style.bg.unwrap_or(helix_view::graphics::Color::Reset));
 
             let left_cap = "\u{E0B6}";
-            let cmd_text = " CMD ";
             let right_cap = "\u{E0B4}";
 
             let mut x = area.x;
             surface.set_string(x, area.y + line, left_cap, cap_style);
             x += left_cap.width() as u16;
-            surface.set_string(x, area.y + line, cmd_text, cmd_style);
+            surface.set_string(x, area.y + line, &cmd_text, cmd_style);
             x += cmd_text.width() as u16;
             surface.set_string(x, area.y + line, right_cap, cap_style);
             x += right_cap.width() as u16;
@@ -887,7 +903,11 @@ impl Component for Prompt {
                 let text = format!(" ERR: {} ", error);
                 ("\u{E0B6}".width() + text.width() + "\u{E0B4}".width() + 1) as u16
             } else {
-                ("\u{E0B6}".width() + " CMD ".width() + "\u{E0B4}".width() + 1) as u16
+                let label = match &self.status_label {
+                    Some(l) => format!(" {} ", l),
+                    None => " CMD ".to_string(),
+                };
+                ("\u{E0B6}".width() + label.width() + "\u{E0B4}".width() + 1) as u16
             }
         } else {
             0

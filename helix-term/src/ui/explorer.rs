@@ -925,9 +925,7 @@ impl Explorer {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(side_area, background);
 
-        // Prompt should render in the command line (bottom of terminal),
-        // which is 2 rows below the clipped area (statusline + commandline).
-        let prompt_area = Rect::new(area.x, area.y + area.height + 1, area.width, 1);
+        let prompt_area = Rect::new(area.x, area.y + area.height, area.width, 1);
 
         let split_style = cx.editor.theme.get("ui.window");
         let border = match position {
