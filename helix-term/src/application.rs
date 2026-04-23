@@ -1699,6 +1699,14 @@ impl Application {
 
         self.restore_term()?;
 
+        // Reset terminal settings to a known-good state
+        #[cfg(not(windows))]
+        {
+            let _ = std::process::Command::new("stty")
+                .arg("sane")
+                .status();
+        }
+
         for err in close_errs {
             self.editor.exit_code = 1;
             eprintln!("Error: {}", err);

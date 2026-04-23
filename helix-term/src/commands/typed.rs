@@ -5021,6 +5021,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             ..Signature::DEFAULT
         },
     },
+    TypableCommand {
+        name: "copy-location",
+        aliases: &["cl"],
+        doc: "Copy selection line locations to clipboard (e.g., path#L2-6,L12-24).",
+        fun: copy_location,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
 ];
 
 pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =
@@ -5492,5 +5503,45 @@ fn untrust_workspace(
     }
 
     helix_loader::workspace_trust::WorkspaceTrust::load(false).untrust_workspace();
+    Ok(())
+}
+
+fn copy_location(
+    cx: &mut compositor::Context,
+    _args: Args<'_>,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let path = doc
+        .relative_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "[scratch]".into());
+
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id);
+    let ranges: Vec<String> = selection
+        .ranges()
+        .iter()
+        .map(|range| {
+            let (start, end) = range.line_range(text);
+            let start = start + 1; // 1-based
+            let end = end + 1;
+            if start == end {
+                format!("L{start}")
+            } else {
+                format!("L{start}-{end}")
+            }
+        })
+        .collect();
+
+    let result = format!("{}#{}", path, ranges.join(","));
+    match cx.editor.registers.write('+', vec![result.clone()]) {
+        Ok(_) => cx.editor.set_status(format!("Copy `{}` to registry", result)),
+        Err(err) => cx.editor.set_error(err.to_string()),
+    }
     Ok(())
 }
