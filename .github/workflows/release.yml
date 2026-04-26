@@ -7,6 +7,7 @@ on:
     branches:
     - 'patch/ci-release-*'
     - 'ofzo'
+    - 'skybe/release'
   pull_request:
     paths:
     - '.github/workflows/release.yml'
@@ -16,7 +17,7 @@ env:
   # a release, allowing for manual inspection of the output. This mode is
   # activated if the CI run was triggered by events other than pushed tags, or
   # if the repository is a fork.
-  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'helix-editor/helix' }}
+  preview: ${{ !startsWith(github.ref, 'refs/tags/') && !(github.ref == 'refs/heads/skybe/release' && github.repository == 'ofzo/helix-editor') }}
 
 jobs:
   fetch-grammars:
@@ -246,7 +247,17 @@ jobs:
           set -ex
 
           source="$(pwd)"
-          tag=${GITHUB_REF_NAME//\//}
+
+          # Compute tag: use git tag for tag builds, version+commit for branch builds
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag=${GITHUB_REF_NAME//\//}
+          else
+            VERSION=$(grep '^version' "$source/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            tag="v${VERSION}-${SHORT_SHA}"
+          fi
+          echo "RELEASE_TAG=$tag" >> $GITHUB_ENV
+
           mkdir -p runtime/grammars/sources
           tar xJf grammars/grammars.tar.xz -C runtime/grammars/sources
           rm -rf grammars
@@ -291,7 +302,7 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: dist/*
           file_glob: true
-          tag: ${{ github.ref_name }}
+          tag: ${{ env.RELEASE_TAG }}
           overwrite: true
 
       - name: Upload binaries as artifact
