@@ -251,3 +251,121 @@ fn synthesize_dirs(mut entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
     entries.extend(new_dirs);
     entries
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn entry(path: &str, is_dir: bool) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            is_dir,
+        }
+    }
+
+    // --- is_archive ---
+
+    #[test]
+    fn is_archive_zip() {
+        assert!(is_archive(Path::new("foo.zip")));
+        assert!(is_archive(Path::new("FOO.ZIP")));
+    }
+
+    #[test]
+    fn is_archive_tar_variants() {
+        assert!(is_archive(Path::new("data.tar")));
+        assert!(is_archive(Path::new("data.tar.gz")));
+        assert!(is_archive(Path::new("data.tgz")));
+    }
+
+    #[test]
+    fn is_archive_rejects_non_archive() {
+        assert!(!is_archive(Path::new("file.pdf")));
+        assert!(!is_archive(Path::new("file.rs")));
+        assert!(!is_archive(Path::new("")));
+    }
+
+    // --- direct_children ---
+
+    #[test]
+    fn direct_children_root_level() {
+        let entries = vec![
+            entry("src/", true),
+            entry("src/main.rs", false),
+            entry("README.md", false),
+        ];
+        let children = direct_children(&entries, "");
+        let names: Vec<&str> = children.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"src/"));
+        assert!(names.contains(&"README.md"));
+    }
+
+    #[test]
+    fn direct_children_nested() {
+        let entries = vec![
+            entry("src/", true),
+            entry("src/main.rs", false),
+            entry("src/lib.rs", false),
+            entry("src/util/", true),
+            entry("src/util/helper.rs", false),
+        ];
+        let children = direct_children(&entries, "src/");
+        assert_eq!(children.len(), 3);
+        let names: Vec<&str> = children.iter().map(|c| c.path.as_str()).collect();
+        assert!(names.contains(&"src/main.rs"));
+        assert!(names.contains(&"src/lib.rs"));
+        assert!(names.contains(&"src/util/"));
+    }
+
+    #[test]
+    fn direct_children_deduplicates() {
+        let entries = vec![
+            entry("a/b.txt", false),
+            entry("a/c.txt", false),
+        ];
+        let children = direct_children(&entries, "");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].path, "a/");
+        assert!(children[0].is_dir);
+    }
+
+    #[test]
+    fn direct_children_empty_parent() {
+        let children = direct_children(&[], "");
+        assert!(children.is_empty());
+    }
+
+    // --- synthesize_dirs ---
+
+    #[test]
+    fn synthesize_dirs_creates_missing_parents() {
+        let entries = vec![entry("a/b/c.txt", false)];
+        let result = synthesize_dirs(entries);
+        let paths: Vec<&str> = result.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"a/"));
+        assert!(paths.contains(&"a/b/"));
+        assert!(paths.contains(&"a/b/c.txt"));
+    }
+
+    #[test]
+    fn synthesize_dirs_no_duplicates() {
+        let entries = vec![
+            entry("x/", true),
+            entry("x/y.txt", false),
+        ];
+        let result = synthesize_dirs(entries);
+        let dir_count = result.iter().filter(|e| e.path == "x/").count();
+        assert_eq!(dir_count, 1);
+    }
+
+    #[test]
+    fn synthesize_dirs_root_file_unchanged() {
+        let entries = vec![entry("README.md", false)];
+        let result = synthesize_dirs(entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "README.md");
+        assert!(!result[0].is_dir);
+    }
+}

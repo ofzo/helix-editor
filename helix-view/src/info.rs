@@ -104,3 +104,86 @@ impl Info {
         infobox
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_empty_body() {
+        let info = Info::new("Title", &[] as &[(&str, &str)]);
+        assert_eq!(info.height, 1);
+        assert_eq!(info.width, 5); // "Title".len()
+        assert!(info.text.is_empty());
+        assert_eq!(info.scroll_offset, 0);
+    }
+
+    #[test]
+    fn new_with_body() {
+        let body = vec![("a", "desc a"), ("bb", "desc b")];
+        let info = Info::new("Test", &body);
+        assert_eq!(info.height, 2);
+        assert!(info.width > 0);
+        assert_eq!(info.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_up_at_zero_stays_zero() {
+        let mut info = Info::new("T", &[("k", "v")]);
+        info.scroll_up();
+        assert_eq!(info.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_down_capped_at_max() {
+        let body: Vec<(String, &str)> = (0..20).map(|i| (format!("k{i}"), "v")).collect();
+        let mut info = Info::new("T", &body);
+        assert_eq!(info.height, 20);
+
+        for _ in 0..30 {
+            info.scroll_down();
+        }
+        // max_offset = 20 - MAX_DISPLAY_LINES(16) = 4
+        assert_eq!(info.scroll_offset, 4);
+    }
+
+    #[test]
+    fn scroll_up_after_down() {
+        let body: Vec<(String, &str)> = (0..20).map(|i| (format!("k{i}"), "v")).collect();
+        let mut info = Info::new("T", &body);
+        info.scroll_down();
+        info.scroll_down();
+        assert_eq!(info.scroll_offset, 2);
+        info.scroll_up();
+        assert_eq!(info.scroll_offset, 1);
+    }
+
+    #[test]
+    fn can_scroll_checks() {
+        let body: Vec<(String, &str)> = (0..20).map(|i| (format!("k{i}"), "v")).collect();
+        let mut info = Info::new("T", &body);
+        assert!(!info.can_scroll_up());
+        assert!(info.can_scroll_down());
+
+        // Scroll to max
+        for _ in 0..10 {
+            info.scroll_down();
+        }
+        assert!(info.can_scroll_up());
+        assert!(!info.can_scroll_down());
+    }
+
+    #[test]
+    fn display_lines_caps_at_max() {
+        let body: Vec<(String, &str)> = (0..20).map(|i| (format!("k{i}"), "v")).collect();
+        let info = Info::new("T", &body);
+        assert_eq!(info.display_lines(), MAX_DISPLAY_LINES);
+    }
+
+    #[test]
+    fn display_lines_small_body() {
+        let body = vec![("a", "1"), ("b", "2")];
+        let info = Info::new("T", &body);
+        assert_eq!(info.display_lines(), 2);
+    }
+}

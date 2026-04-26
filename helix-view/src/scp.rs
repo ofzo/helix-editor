@@ -113,3 +113,105 @@ fn temp_path_for(url: &ScpUrl) -> PathBuf {
 
     std::env::temp_dir().join(filename)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_with_user() {
+        let url = ScpUrl::parse("scp://alice@example.com/home/alice/file.txt").unwrap();
+        assert_eq!(url.user.as_deref(), Some("alice"));
+        assert_eq!(url.host, "example.com");
+        assert_eq!(url.path, "/home/alice/file.txt");
+    }
+
+    #[test]
+    fn parse_without_user() {
+        let url = ScpUrl::parse("scp://myhost/etc/config").unwrap();
+        assert!(url.user.is_none());
+        assert_eq!(url.host, "myhost");
+        assert_eq!(url.path, "/etc/config");
+    }
+
+    #[test]
+    fn parse_rejects_missing_path() {
+        assert!(ScpUrl::parse("scp://host").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_empty_authority() {
+        assert!(ScpUrl::parse("scp:///some/path").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_empty_path() {
+        assert!(ScpUrl::parse("scp://host/").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_wrong_scheme() {
+        assert!(ScpUrl::parse("http://host/path").is_none());
+    }
+
+    #[test]
+    fn to_url_string_roundtrip_with_user() {
+        let url = ScpUrl::parse("scp://bob@server/data/file.rs").unwrap();
+        assert_eq!(url.to_url_string(), "scp://bob@server/data/file.rs");
+    }
+
+    #[test]
+    fn to_url_string_roundtrip_without_user() {
+        let url = ScpUrl::parse("scp://server/data/file.rs").unwrap();
+        assert_eq!(url.to_url_string(), "scp://server/data/file.rs");
+    }
+
+    #[test]
+    fn to_scp_arg_with_user() {
+        let url = ScpUrl::parse("scp://bob@server/data/file.rs").unwrap();
+        assert_eq!(url.to_scp_arg(), "bob@server:/data/file.rs");
+    }
+
+    #[test]
+    fn to_scp_arg_without_user() {
+        let url = ScpUrl::parse("scp://server/data/file.rs").unwrap();
+        assert_eq!(url.to_scp_arg(), "server:/data/file.rs");
+    }
+
+    #[test]
+    fn is_scp_url_positive() {
+        assert!(is_scp_url("scp://host/path"));
+        assert!(is_scp_url("scp://"));
+    }
+
+    #[test]
+    fn is_scp_url_negative() {
+        assert!(!is_scp_url("http://host"));
+        assert!(!is_scp_url("/local/path"));
+        assert!(!is_scp_url(""));
+    }
+
+    #[test]
+    fn temp_path_deterministic() {
+        let url = ScpUrl::parse("scp://host/file.txt").unwrap();
+        let p1 = temp_path_for(&url);
+        let p2 = temp_path_for(&url);
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn temp_path_preserves_extension() {
+        let url = ScpUrl::parse("scp://host/project/main.rs").unwrap();
+        let path = temp_path_for(&url);
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("rs"));
+    }
+
+    #[test]
+    fn temp_path_no_extension() {
+        let url = ScpUrl::parse("scp://host/bin/myapp").unwrap();
+        let path = temp_path_for(&url);
+        assert!(path.extension().is_none() || path.to_str().unwrap().contains("helix-scp-"));
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(!name.contains('.'));
+    }
+}

@@ -1288,4 +1288,84 @@ mod tests {
             Some(7)
         );
     }
+
+    #[test]
+    fn jump_list_new_has_one_entry() {
+        let sel = Selection::point(0);
+        let jl = JumpList::new((DocumentId::default(), sel));
+        assert_eq!(jl.jumps.len(), 1);
+        assert_eq!(jl.current, 0);
+    }
+
+    #[test]
+    fn jump_list_push_appends() {
+        let doc_id = DocumentId::default();
+        let mut jl = JumpList::new((doc_id, Selection::point(0)));
+        // After new: current=0, jumps=[point(0)]
+        // push truncates to current(0), then appends
+        jl.push((doc_id, Selection::point(10)));
+        assert_eq!(jl.jumps.len(), 1);
+        assert_eq!(jl.current, 1);
+        assert_eq!(jl.jumps[0].1.primary().anchor, 10);
+    }
+
+    #[test]
+    fn jump_list_push_deduplicates() {
+        let doc_id = DocumentId::default();
+        let sel = Selection::point(5);
+        let mut jl = JumpList::new((doc_id, sel.clone()));
+        // Move current forward so truncate doesn't clear
+        jl.current = jl.jumps.len();
+        jl.push((doc_id, sel.clone()));
+        // Back is same as new push → dedup
+        assert_eq!(jl.jumps.len(), 1);
+    }
+
+    #[test]
+    fn jump_list_capacity_enforced() {
+        let doc_id = DocumentId::default();
+        let mut jl = JumpList::new((doc_id, Selection::point(0)));
+        for i in 1..=JUMP_LIST_CAPACITY + 10 {
+            jl.push((doc_id, Selection::point(i)));
+        }
+        assert!(jl.jumps.len() <= JUMP_LIST_CAPACITY);
+    }
+
+    #[test]
+    fn jump_list_forward() {
+        let doc_id = DocumentId::default();
+        // Build jumplist by manually adding entries
+        let mut jl = JumpList::new((doc_id, Selection::point(0)));
+        jl.current = jl.jumps.len(); // move to end so push doesn't truncate
+        jl.push((doc_id, Selection::point(10)));
+        jl.push((doc_id, Selection::point(20)));
+        // jumps = [point(0), point(10), point(20)], current = 3
+        jl.current = 0;
+
+        let jump = jl.forward(1).unwrap();
+        assert_eq!(jump.1.primary().anchor, 10);
+        assert_eq!(jl.current, 1);
+
+        let jump = jl.forward(1).unwrap();
+        assert_eq!(jump.1.primary().anchor, 20);
+    }
+
+    #[test]
+    fn jump_list_forward_out_of_bounds() {
+        let doc_id = DocumentId::default();
+        let mut jl = JumpList::new((doc_id, Selection::point(0)));
+        assert!(jl.forward(1).is_none());
+    }
+
+    #[test]
+    fn jump_list_remove_by_doc_id() {
+        let doc_a = DocumentId::default();
+        let mut jl = JumpList::new((doc_a, Selection::point(0)));
+        jl.current = jl.jumps.len();
+        jl.push((doc_a, Selection::point(5)));
+        assert_eq!(jl.jumps.len(), 2);
+
+        jl.remove(&doc_a);
+        assert!(jl.jumps.is_empty());
+    }
 }
