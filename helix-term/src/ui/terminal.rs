@@ -130,6 +130,8 @@ impl TerminalPane {
             working_directory: Some(helix_stdx::env::current_working_dir()),
             drain_on_exit: false,
             env: HashMap::new(),
+            #[cfg(target_os = "windows")]
+            escape_args: false,
         };
 
         let window_size = WindowSize {
